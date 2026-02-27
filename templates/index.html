@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FFXIV Market Dashboard</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600&display=swap");
+
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel-2: #1b2028;
+        --text: #e9edf1;
+        --muted: #a6b0bd;
+        --accent: #7bdff2;
+        --accent-2: #f4d35e;
+        --border: #2b3240;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: "Space Grotesk", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(1200px 600px at 10% -10%, #1b2a3a 0%, transparent 60%),
+          radial-gradient(900px 500px at 110% 10%, #231f2a 0%, transparent 55%),
+          var(--bg);
+        color: var(--text);
+      }
+
+      .wrap {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 32px 20px 56px;
+      }
+
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        align-items: baseline;
+        margin-bottom: 24px;
+      }
+
+      h1 {
+        font-size: 28px;
+        letter-spacing: 0.4px;
+        margin: 0;
+      }
+
+      .tag {
+        font-size: 13px;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        padding: 4px 10px;
+        border-radius: 999px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 14px;
+        margin-bottom: 26px;
+      }
+
+      .card {
+        background: linear-gradient(180deg, var(--panel), var(--panel-2));
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 14px 16px;
+      }
+
+      .card h3 {
+        margin: 0 0 6px;
+        font-size: 14px;
+        color: var(--muted);
+        font-weight: 600;
+      }
+
+      .card .value {
+        font-size: 22px;
+        font-weight: 600;
+      }
+
+      section {
+        margin-top: 20px;
+      }
+
+      h2 {
+        font-size: 18px;
+        margin: 0 0 10px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+
+      th, td {
+        text-align: left;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        font-size: 13px;
+      }
+
+      th {
+        color: var(--muted);
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+        font-size: 11px;
+      }
+
+      tr:last-child td { border-bottom: none; }
+
+      .muted { color: var(--muted); }
+      .accent { color: var(--accent); }
+      .accent-2 { color: var(--accent-2); }
+
+      .pill {
+        display: inline-block;
+        background: #232a36;
+        border: 1px solid var(--border);
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+      }
+
+      .recipes {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 14px;
+      }
+
+      .recipe {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px 14px;
+      }
+
+      .ingredients {
+        margin: 8px 0 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 6px;
+      }
+
+      .ingredients li {
+        display: flex;
+        justify-content: space-between;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      @media (max-width: 680px) {
+        h1 { font-size: 22px; }
+        .grid { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>FFXIV Market Dashboard</h1>
+        <span class="tag">World: {{ world }}</span>
+        <span class="tag">DB: {{ db_path }}</span>
+      </header>
+
+      <div class="grid">
+        <div class="card">
+          <h3>Items</h3>
+          <div class="value">{{ counts.items }}</div>
+        </div>
+        <div class="card">
+          <h3>Recipes</h3>
+          <div class="value">{{ counts.recipes }}</div>
+        </div>
+        <div class="card">
+          <h3>Recipe Ingredients</h3>
+          <div class="value">{{ counts.ingredients }}</div>
+        </div>
+        <div class="card">
+          <h3>Prices (World)</h3>
+          <div class="value">{{ counts.prices }}</div>
+        </div>
+      </div>
+
+      <section>
+        <h2>Latest Prices</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>ID</th>
+              <th>P50</th>
+              <th>Min</th>
+              <th>Listings</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in prices %}
+              <tr>
+                <td class="accent">{{ p.name }}</td>
+                <td class="muted">{{ p.item_id }}</td>
+                <td>{{ "%.2f"|format(p.p50_price or 0) }}</td>
+                <td>{{ "%.2f"|format(p.min_price or 0) }}</td>
+                <td>{{ p.listings or "-" }}</td>
+                <td class="muted">{{ p.last_updated }}</td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="6" class="muted">No prices yet. Run update_prices.py first.</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Recipe Samples</h2>
+        <div class="recipes">
+          {% for r in recipes %}
+            <div class="recipe">
+              <div class="accent-2">{{ r.name }}</div>
+              <div class="muted">ID {{ r.item_id }} · Yield {{ r.yield }} · Ingredients {{ r.ing_count }}</div>
+              <ul class="ingredients">
+                {% for ing in r.ingredients %}
+                  <li>
+                    <span>{{ ing.name }}</span>
+                    <span class="pill">x{{ ing.qty }}</span>
+                  </li>
+                {% else %}
+                  <li>No ingredients found.</li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% else %}
+            <div class="recipe muted">No recipes yet. Run update_recipes.py first.</div>
+          {% endfor %}
+        </div>
+      </section>
+    </div>
+  </body>
+</html>
