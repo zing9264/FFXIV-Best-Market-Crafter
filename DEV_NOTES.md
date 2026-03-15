@@ -1,4 +1,4 @@
-# FF14 Market Crafter Session Notes
+# FF14 Market Crafter Dev Notes
 
 ## Goal
 Build a local FF14 crafting profit dashboard with:

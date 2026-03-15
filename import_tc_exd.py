@@ -7,12 +7,8 @@ import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
-from config import DB_PATH
+from config import DB_PATH, ITEM_CSV_PATH, RECIPE_CSV_PATH
 from db import init_db
-
-
-DEFAULT_ITEM_CSV = r"C:\Users\zing9\Downloads\XivExdUnpacker-win-x64\rawexd\tc\Item.csv"
-DEFAULT_RECIPE_CSV = r"C:\Users\zing9\Downloads\XivExdUnpacker-win-x64\rawexd\tc\Recipe.csv"
 
 
 def parse_int(value: str) -> int | None:
@@ -131,11 +127,11 @@ def import_into_db(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Import TC Item/Recipe CSV exported by XivExdUnpacker.")
-    parser.add_argument("--item-csv", default=DEFAULT_ITEM_CSV, help=f"Path to Item.csv (default: {DEFAULT_ITEM_CSV})")
+    parser.add_argument("--item-csv", default=ITEM_CSV_PATH, help=f"Path to Item.csv (default: {ITEM_CSV_PATH})")
     parser.add_argument(
         "--recipe-csv",
-        default=DEFAULT_RECIPE_CSV,
-        help=f"Path to Recipe.csv (default: {DEFAULT_RECIPE_CSV})",
+        default=RECIPE_CSV_PATH,
+        help=f"Path to Recipe.csv (default: {RECIPE_CSV_PATH})",
     )
     parser.add_argument("--db", default=DB_PATH, help=f"Path to target SQLite DB (default: {DB_PATH})")
     parser.add_argument(
