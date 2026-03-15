@@ -1,251 +1,650 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-Hant">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FFXIV Market Dashboard</title>
     <style>
-      @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600&display=swap");
+      @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+TC:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap");
 
       :root {
-        --bg: #0f1115;
-        --panel: #171a21;
-        --panel-2: #1b2028;
-        --text: #e9edf1;
-        --muted: #a6b0bd;
-        --accent: #7bdff2;
-        --accent-2: #f4d35e;
-        --border: #2b3240;
+        --bg: #f4efe5;
+        --paper: rgba(255, 252, 246, 0.82);
+        --panel: rgba(255, 248, 238, 0.9);
+        --panel-strong: #fffdf9;
+        --ink: #1f1a16;
+        --muted: #6f675e;
+        --line: #d8c6b2;
+        --accent: #b65c2d;
+        --accent-2: #1c6b63;
+        --danger: #9d2f1f;
+        --ok: #24613d;
+        --shadow: 0 18px 50px rgba(77, 49, 25, 0.12);
       }
 
       * { box-sizing: border-box; }
 
       body {
         margin: 0;
-        font-family: "Space Grotesk", "Segoe UI", sans-serif;
+        color: var(--ink);
+        font-family: "IBM Plex Sans TC", sans-serif;
         background:
-          radial-gradient(1200px 600px at 10% -10%, #1b2a3a 0%, transparent 60%),
-          radial-gradient(900px 500px at 110% 10%, #231f2a 0%, transparent 55%),
-          var(--bg);
-        color: var(--text);
+          radial-gradient(900px 500px at 0% 0%, rgba(182, 92, 45, 0.18), transparent 55%),
+          radial-gradient(700px 500px at 100% 0%, rgba(28, 107, 99, 0.15), transparent 60%),
+          linear-gradient(180deg, #f7f1e7 0%, #eee2cf 100%);
       }
 
       .wrap {
-        max-width: 1200px;
+        max-width: 1380px;
         margin: 0 auto;
-        padding: 32px 20px 56px;
+        padding: 28px 18px 64px;
       }
 
       header {
         display: flex;
         flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
         gap: 16px;
-        align-items: baseline;
         margin-bottom: 24px;
       }
 
-      h1 {
-        font-size: 28px;
-        letter-spacing: 0.4px;
+      .title-block h1 {
         margin: 0;
+        font-family: "Space Grotesk", sans-serif;
+        font-size: clamp(30px, 5vw, 56px);
+        line-height: 0.95;
+        letter-spacing: -0.04em;
+      }
+
+      .title-block p {
+        margin: 10px 0 0;
+        color: var(--muted);
+        max-width: 680px;
+      }
+
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
       }
 
       .tag {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.46);
+        border-radius: 999px;
+        padding: 8px 12px;
         font-size: 13px;
         color: var(--muted);
-        border: 1px solid var(--border);
-        padding: 4px 10px;
+      }
+
+      .tabs {
+        display: flex;
+        gap: 10px;
+        margin: 24px 0 18px;
+      }
+
+      .tab {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 120px;
+        padding: 10px 14px;
         border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.46);
+        color: var(--ink);
+        text-decoration: none;
+        font-weight: 600;
+      }
+
+      .tab.active {
+        background: var(--ink);
+        color: #fff8f0;
+        border-color: var(--ink);
       }
 
       .grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 14px;
-        margin-bottom: 26px;
+        margin-bottom: 20px;
+      }
+
+      .card, .panel {
+        background: var(--paper);
+        border: 1px solid rgba(216, 198, 178, 0.95);
+        backdrop-filter: blur(12px);
+        box-shadow: var(--shadow);
       }
 
       .card {
-        background: linear-gradient(180deg, var(--panel), var(--panel-2));
-        border: 1px solid var(--border);
-        border-radius: 14px;
-        padding: 14px 16px;
+        border-radius: 18px;
+        padding: 18px;
       }
 
-      .card h3 {
-        margin: 0 0 6px;
-        font-size: 14px;
+      .card .label {
         color: var(--muted);
-        font-weight: 600;
+        font-size: 13px;
+        margin-bottom: 10px;
       }
 
       .card .value {
-        font-size: 22px;
-        font-weight: 600;
+        font-family: "Space Grotesk", sans-serif;
+        font-size: 34px;
+        line-height: 1;
       }
 
-      section {
-        margin-top: 20px;
+      .layout {
+        display: grid;
+        grid-template-columns: 360px minmax(0, 1fr);
+        gap: 18px;
       }
 
-      h2 {
-        font-size: 18px;
+      .panel {
+        border-radius: 22px;
+        padding: 18px;
+      }
+
+      .panel h2 {
+        margin: 0 0 12px;
+        font-size: 20px;
+      }
+
+      .panel h3 {
         margin: 0 0 10px;
+        font-size: 16px;
+      }
+
+      .search-form {
+        display: grid;
+        gap: 10px;
+      }
+
+      .search-form input {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px 16px;
+        font-size: 15px;
+        background: var(--panel-strong);
+      }
+
+      .actions {
+        display: flex;
+        gap: 10px;
+      }
+
+      .btn {
+        border: 0;
+        border-radius: 14px;
+        padding: 12px 16px;
+        font-weight: 600;
+        cursor: pointer;
+        text-decoration: none;
+      }
+
+      .btn.primary {
+        background: var(--accent);
+        color: #fff7f2;
+      }
+
+      .btn.ghost {
+        background: rgba(255, 255, 255, 0.55);
+        color: var(--ink);
+        border: 1px solid var(--line);
+      }
+
+      .hint {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .notice {
+        margin: 0 0 16px;
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.58);
+        font-size: 14px;
+      }
+
+      .notice.ok {
+        border-color: rgba(36, 97, 61, 0.35);
+        color: var(--ok);
+      }
+
+      .notice.error {
+        border-color: rgba(157, 47, 31, 0.35);
+        color: var(--danger);
+      }
+
+      .result-list {
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .result-link {
+        display: block;
+        text-decoration: none;
+        color: inherit;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.55);
+        border-radius: 14px;
+        padding: 12px 14px;
+      }
+
+      .result-link strong {
+        display: block;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(28, 107, 99, 0.12);
+        color: var(--accent-2);
+        font-size: 12px;
+        margin-top: 6px;
+      }
+
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 16px;
+      }
+
+      .summary .card {
+        min-height: 130px;
+      }
+
+      .summary .value {
+        font-size: 30px;
+      }
+
+      .subvalue {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        border-radius: 16px;
+        border: 1px solid var(--line);
       }
 
       table {
         width: 100%;
         border-collapse: collapse;
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        overflow: hidden;
+        background: rgba(255, 252, 247, 0.7);
       }
 
       th, td {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--line);
         text-align: left;
-        padding: 10px 12px;
-        border-bottom: 1px solid var(--border);
+        vertical-align: top;
         font-size: 13px;
       }
 
       th {
+        font-size: 12px;
         color: var(--muted);
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.6px;
-        font-size: 11px;
+        background: rgba(250, 241, 230, 0.95);
       }
 
-      tr:last-child td { border-bottom: none; }
+      tr:last-child td {
+        border-bottom: none;
+      }
 
+      .money {
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+
+      .positive { color: var(--ok); }
+      .negative { color: var(--danger); }
       .muted { color: var(--muted); }
-      .accent { color: var(--accent); }
-      .accent-2 { color: var(--accent-2); }
 
-      .pill {
-        display: inline-block;
-        background: #232a36;
-        border: 1px solid var(--border);
-        padding: 2px 8px;
-        border-radius: 999px;
-        font-size: 12px;
-      }
-
-      .recipes {
+      .sample-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-        gap: 14px;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 12px;
       }
 
-      .recipe {
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 12px 14px;
+      .sample {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px;
+        background: rgba(255, 255, 255, 0.5);
       }
 
-      .ingredients {
-        margin: 8px 0 0;
-        padding: 0;
-        list-style: none;
-        display: grid;
-        gap: 6px;
-      }
-
-      .ingredients li {
-        display: flex;
-        justify-content: space-between;
+      .sample ul {
+        margin: 10px 0 0;
+        padding-left: 18px;
         color: var(--muted);
-        font-size: 12px;
       }
 
-      @media (max-width: 680px) {
-        h1 { font-size: 22px; }
-        .grid { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+      @media (max-width: 1080px) {
+        .grid, .summary {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .layout {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 720px) {
+        .grid, .summary {
+          grid-template-columns: 1fr;
+        }
+
+        .wrap {
+          padding-left: 14px;
+          padding-right: 14px;
+        }
       }
     </style>
   </head>
   <body>
     <div class="wrap">
       <header>
-        <h1>FFXIV Market Dashboard</h1>
-        <span class="tag">World: {{ world }}</span>
-        <span class="tag">DB: {{ db_path }}</span>
+        <div class="title-block">
+          <h1>Craft Margin Board</h1>
+          <p>查詢成品配方、素材價格、素材總和與價差，也能直接看前 100 名價差排行。</p>
+        </div>
+        <div class="meta">
+          <span class="tag">World: {{ world }}</span>
+          <span class="tag">Sell Price: {{ sell_price_field }}</span>
+          <span class="tag">Buy Price: {{ buy_price_field }}</span>
+          <span class="tag">DB: {{ db_path }}</span>
+        </div>
       </header>
+
+      <div class="tabs">
+        <a class="tab {% if tab == 'lookup' %}active{% endif %}" href="/?tab=lookup">素材查詢</a>
+        <a class="tab {% if tab == 'ranking' %}active{% endif %}" href="/?tab=ranking">價差前 100</a>
+      </div>
 
       <div class="grid">
         <div class="card">
-          <h3>Items</h3>
+          <div class="label">Items</div>
           <div class="value">{{ counts.items }}</div>
         </div>
         <div class="card">
-          <h3>Recipes</h3>
+          <div class="label">Recipes</div>
           <div class="value">{{ counts.recipes }}</div>
         </div>
         <div class="card">
-          <h3>Recipe Ingredients</h3>
+          <div class="label">Recipe Ingredients</div>
           <div class="value">{{ counts.ingredients }}</div>
         </div>
         <div class="card">
-          <h3>Prices (World)</h3>
+          <div class="label">Prices In DB</div>
           <div class="value">{{ counts.prices }}</div>
         </div>
       </div>
 
-      <section>
-        <h2>Latest Prices</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Item</th>
-              <th>ID</th>
-              <th>P50</th>
-              <th>Min</th>
-              <th>Listings</th>
-              <th>Updated</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for p in prices %}
-              <tr>
-                <td class="accent">{{ p.name }}</td>
-                <td class="muted">{{ p.item_id }}</td>
-                <td>{{ "%.2f"|format(p.p50_price or 0) }}</td>
-                <td>{{ "%.2f"|format(p.min_price or 0) }}</td>
-                <td>{{ p.listings or "-" }}</td>
-                <td class="muted">{{ p.last_updated }}</td>
-              </tr>
-            {% else %}
-              <tr>
-                <td colspan="6" class="muted">No prices yet. Run update_prices.py first.</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </section>
+      {% if tab == "lookup" %}
+        <div class="layout">
+          <aside class="panel">
+            <h2>查詢道具</h2>
+            <form class="search-form" method="get" action="/">
+              <input type="hidden" name="tab" value="lookup" />
+              <input
+                type="text"
+                name="q"
+                value="{{ query }}"
+                placeholder="輸入 item id 或 道具名稱"
+              />
+              <div class="actions">
+                <button class="btn primary" type="submit">查詢</button>
+                <a class="btn ghost" href="/?tab=lookup">清除</a>
+              </div>
+            </form>
+            <p class="hint">輸入中文名稱片段或完整 `item id`。若結果多筆，先在下方點選目標成品。</p>
 
-      <section>
-        <h2>Recipe Samples</h2>
-        <div class="recipes">
-          {% for r in recipes %}
-            <div class="recipe">
-              <div class="accent-2">{{ r.name }}</div>
-              <div class="muted">ID {{ r.item_id }} · Yield {{ r.yield }} · Ingredients {{ r.ing_count }}</div>
-              <ul class="ingredients">
-                {% for ing in r.ingredients %}
-                  <li>
-                    <span>{{ ing.name }}</span>
-                    <span class="pill">x{{ ing.qty }}</span>
-                  </li>
-                {% else %}
-                  <li>No ingredients found.</li>
+            {% if search_results %}
+              <div class="result-list">
+                {% for item in search_results %}
+                  <a class="result-link" href="/?tab=lookup&q={{ query }}&item_id={{ item.item_id }}">
+                    <strong>{{ item.name }}</strong>
+                    <span class="muted">ID {{ item.item_id }}</span>
+                    {% if item.has_recipe %}
+                      <span class="badge">可查配方</span>
+                    {% endif %}
+                  </a>
                 {% endfor %}
-              </ul>
-            </div>
-          {% else %}
-            <div class="recipe muted">No recipes yet. Run update_recipes.py first.</div>
-          {% endfor %}
+              </div>
+            {% elif query %}
+              <p class="hint">找不到符合的道具。</p>
+            {% endif %}
+          </aside>
+
+          <main class="panel">
+            {% if refresh_status == "ok" %}
+              <div class="notice ok">已更新這張製作表的價格資料，共刷新 {{ refreshed_count or "0" }} 筆 item price。</div>
+            {% elif refresh_status == "error" %}
+              <div class="notice error">更新價格時發生錯誤，請稍後再試一次。</div>
+            {% elif refresh_status == "invalid" %}
+              <div class="notice error">沒有收到有效的 item id。</div>
+            {% endif %}
+
+            {% if detail %}
+              <h2>{{ detail.name }}</h2>
+              <p class="hint">ID {{ detail.item_id }}{% if detail.has_recipe %} · 配方產量 {{ detail.yield }}{% else %} · 目前沒有配方資料{% endif %}</p>
+
+              <form method="post" action="/refresh-recipe-prices" style="margin: 0 0 16px;">
+                <input type="hidden" name="tab" value="lookup" />
+                <input type="hidden" name="q" value="{{ query }}" />
+                <input type="hidden" name="item_id" value="{{ detail.item_id }}" />
+                <button class="btn primary" type="submit">更新這張製作表價格</button>
+              </form>
+
+              <div class="summary">
+                <div class="card">
+                  <div class="label">成品價格</div>
+                  <div class="value money">{{ fmt_num(detail.product.sell_price) }}</div>
+                  <div class="subvalue">P50 {{ fmt_num(detail.product.p50_price) }} / Min {{ fmt_num(detail.product.min_price) }}</div>
+                </div>
+                <div class="card">
+                  <div class="label">素材總和</div>
+                  <div class="value money">{{ fmt_num(detail.materials_total) }}</div>
+                  <div class="subvalue">整批配方總成本</div>
+                </div>
+                <div class="card">
+                  <div class="label">單件素材成本</div>
+                  <div class="value money">{{ fmt_num(detail.unit_material_cost) }}</div>
+                  <div class="subvalue">素材總和 / Yield {{ detail.yield }}</div>
+                </div>
+                <div class="card">
+                  <div class="label">價差</div>
+                  <div class="value money {% if detail.price_gap is not none and detail.price_gap >= 0 %}positive{% elif detail.price_gap is not none %}negative{% endif %}">
+                    {{ fmt_num(detail.price_gap) }}
+                  </div>
+                  <div class="subvalue">成品價格 - 單件素材成本</div>
+                </div>
+              </div>
+
+              <div class="summary">
+                <div class="card">
+                  <div class="label">成品日成交數</div>
+                  <div class="value">{{ fmt_num(detail.product.daily_sales) }}</div>
+                  <div class="subvalue">來自價格資料的 sale velocity</div>
+                </div>
+                <div class="card">
+                  <div class="label">成品上次成交價</div>
+                  <div class="value money">{{ fmt_num(detail.product.sale_price) }}</div>
+                  <div class="subvalue">資料庫欄位 sale_price</div>
+                </div>
+                <div class="card">
+                  <div class="label">來源世界</div>
+                  <div class="value" style="font-size: 20px;">{{ detail.product.world_name }}</div>
+                  <div class="subvalue">這筆價格對應的 worldName</div>
+                </div>
+                <div class="card">
+                  <div class="label">成品掛單數</div>
+                  <div class="value">{{ detail.product.listings if detail.product.listings is not none else "-" }}</div>
+                  <div class="subvalue">目前 market listings</div>
+                </div>
+                <div class="card">
+                  <div class="label">價格更新時間</div>
+                  <div class="value" style="font-size: 20px;">{{ detail.product.last_updated }}</div>
+                  <div class="subvalue">尚未更新價格時會是空白</div>
+                </div>
+                <div class="card">
+                  <div class="label">狀態</div>
+                  <div class="value" style="font-size: 20px;">
+                    {% if detail.product.sell_price is not none and detail.unit_material_cost is not none %}
+                      可比較
+                    {% else %}
+                      等待價格資料
+                    {% endif %}
+                  </div>
+                  <div class="subvalue">請先跑 `update_prices.py` 才會有完整價格</div>
+                </div>
+              </div>
+
+              <h3>素材明細</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>素材</th>
+                      <th>ID</th>
+                      <th>需求數量</th>
+                      <th>單價</th>
+                      <th>小計</th>
+                      <th>P50</th>
+                      <th>Min</th>
+                      <th>日成交數</th>
+                      <th>掛單數</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for ing in detail.ingredients %}
+                      <tr>
+                        <td>{{ ing.name }}</td>
+                        <td class="muted">{{ ing.item_id }}</td>
+                        <td>{{ ing.qty }}</td>
+                        <td class="money">{{ fmt_num(ing.unit_price) }}</td>
+                        <td class="money">{{ fmt_num(ing.line_total) }}</td>
+                        <td class="money">{{ fmt_num(ing.p50_price) }}</td>
+                        <td class="money">{{ fmt_num(ing.min_price) }}</td>
+                        <td>{{ fmt_num(ing.daily_sales) }}</td>
+                        <td>{{ ing.listings if ing.listings is not none else "-" }}</td>
+                      </tr>
+                    {% else %}
+                      <tr>
+                        <td colspan="9" class="muted">這個道具目前沒有配方或材料資料。</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            {% else %}
+              <h2>查詢結果顯示區</h2>
+              <p class="hint">先在左側輸入道具名稱或 ID。若只有一筆結果，系統會直接載入素材與價差明細。</p>
+
+              <h3 style="margin-top: 22px;">資料庫樣本</h3>
+              <div class="sample-grid">
+                {% for r in recipes[:6] %}
+                  <div class="sample">
+                    <strong>{{ r.name }}</strong>
+                    <div class="muted">ID {{ r.item_id }} · Yield {{ r.yield }} · 素材 {{ r.ing_count }} 項</div>
+                    <ul>
+                      {% for ing in r.ingredients %}
+                        <li>{{ ing.name }} × {{ ing.qty }}</li>
+                      {% endfor %}
+                    </ul>
+                  </div>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </main>
+        </div>
+      {% else %}
+        <section class="panel">
+          <h2>前 100 名價差排行</h2>
+          <p class="hint">排序依據為 `成品價格 - 單件素材成本`。只有成品與所有素材價格都存在時才會列入。</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>成品</th>
+                  <th>ID</th>
+                  <th>Yield</th>
+                  <th>成品價格</th>
+                  <th>單件素材成本</th>
+                  <th>價差</th>
+                  <th>日成交數</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in top_profits %}
+                  <tr>
+                    <td>{{ loop.index }}</td>
+                    <td><a href="/?tab=lookup&item_id={{ row.item_id }}&q={{ row.name }}" style="color: inherit;">{{ row.name }}</a></td>
+                    <td class="muted">{{ row.item_id }}</td>
+                    <td>{{ row.yield }}</td>
+                    <td class="money">{{ fmt_num(row.sell_price) }}</td>
+                    <td class="money">{{ fmt_num(row.unit_material_cost) }}</td>
+                    <td class="money positive">{{ fmt_num(row.price_gap) }}</td>
+                    <td>{{ fmt_num(row.daily_sales) }}</td>
+                  </tr>
+                {% else %}
+                  <tr>
+                    <td colspan="8" class="muted">目前沒有可排行資料。先跑 `update_prices.py` 後再回來看。</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      {% endif %}
+
+      <section class="panel" style="margin-top: 18px;">
+        <h2>最近價格更新</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>ID</th>
+                  <th>來源世界</th>
+                  <th>P50</th>
+                  <th>Min</th>
+                  <th>日成交數</th>
+                  <th>掛單數</th>
+                  <th>Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for p in prices %}
+                <tr>
+                  <td>{{ p.name }}</td>
+                  <td class="muted">{{ p.item_id }}</td>
+                  <td>{{ p.world_name }}</td>
+                  <td class="money">{{ fmt_num(p.p50_price) }}</td>
+                  <td class="money">{{ fmt_num(p.min_price) }}</td>
+                  <td>{{ fmt_num(p.daily_sales) }}</td>
+                  <td>{{ p.listings if p.listings is not none else "-" }}</td>
+                  <td class="muted">{{ p.last_updated }}</td>
+                </tr>
+              {% else %}
+                <tr>
+                  <td colspan="8" class="muted">No prices yet. Run `update_prices.py` first.</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
         </div>
       </section>
     </div>

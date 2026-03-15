@@ -54,11 +54,14 @@ def init_db():
             CREATE TABLE IF NOT EXISTS prices (
                 item_id INTEGER,
                 world TEXT,
-                world_id INTEGER,
-                p50_price REAL,
-                min_price REAL,
-                listings INTEGER,
-                last_updated INTEGER,
+                world_id INTEGER DEFAULT 0,
+                world_name TEXT DEFAULT '',
+                p50_price REAL DEFAULT 0,
+                min_price REAL DEFAULT 0,
+                sale_price REAL DEFAULT 0,
+                listings INTEGER DEFAULT 0,
+                daily_sales REAL DEFAULT 0,
+                last_updated INTEGER DEFAULT 0,
                 PRIMARY KEY (item_id, world)
             );
             """
@@ -77,4 +80,62 @@ def init_db():
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_output ON recipe_ingredients(output_item_id);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_ingredient ON recipe_ingredients(ingredient_item_id);")
+        cur.execute("PRAGMA table_info(prices);")
+        price_info = {row[1]: row for row in cur.fetchall()}
+        expected_defaults = {
+            "world_id": "0",
+            "world_name": "''",
+            "p50_price": "0",
+            "min_price": "0",
+            "sale_price": "0",
+            "listings": "0",
+            "daily_sales": "0",
+            "last_updated": "0",
+        }
+        rebuild_prices = any(
+            name not in price_info or str(price_info[name][4]) != default
+            for name, default in expected_defaults.items()
+        )
+
+        if rebuild_prices:
+            cur.execute(
+                """
+                CREATE TABLE prices_new (
+                    item_id INTEGER,
+                    world TEXT,
+                    world_id INTEGER DEFAULT 0,
+                    world_name TEXT DEFAULT '',
+                    p50_price REAL DEFAULT 0,
+                    min_price REAL DEFAULT 0,
+                    sale_price REAL DEFAULT 0,
+                    listings INTEGER DEFAULT 0,
+                    daily_sales REAL DEFAULT 0,
+                    last_updated INTEGER DEFAULT 0,
+                    PRIMARY KEY (item_id, world)
+                );
+                """
+            )
+            existing_columns = {name for name in price_info}
+            cur.execute(
+                f"""
+                INSERT INTO prices_new(
+                    item_id, world, world_id, world_name, p50_price, min_price, sale_price, listings, daily_sales, last_updated
+                )
+                SELECT
+                    item_id,
+                    world,
+                    COALESCE(world_id, 0),
+                    COALESCE({"world_name" if "world_name" in existing_columns else "''"}, ''),
+                    COALESCE(p50_price, 0),
+                    COALESCE(min_price, 0),
+                    COALESCE({"sale_price" if "sale_price" in existing_columns else "0"}, 0),
+                    COALESCE(listings, 0),
+                    COALESCE({"daily_sales" if "daily_sales" in existing_columns else "0"}, 0),
+                    COALESCE(last_updated, 0)
+                FROM prices;
+                """
+            )
+            cur.execute("DROP TABLE prices;")
+            cur.execute("ALTER TABLE prices_new RENAME TO prices;")
+
         cur.execute("CREATE INDEX IF NOT EXISTS idx_prices_world_item ON prices(world, item_id);")

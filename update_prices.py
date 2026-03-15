@@ -71,6 +71,15 @@ def extract_items(payload) -> List[dict]:
     return []
 
 
+def first_nested_key(values: Iterable[object], keys: Iterable[str]):
+    for value in values:
+        if isinstance(value, dict):
+            result = first_key(value, keys)
+            if result is not None:
+                return result
+    return None
+
+
 class RateLimiter:
     def __init__(self, rps: float):
         self.min_interval = 1.0 / rps if rps > 0 else 0
@@ -97,10 +106,11 @@ async def fetch_prices(session: aiohttp.ClientSession, limiter: RateLimiter, ids
         return await resp.json()
 
 
-async def update_prices_async():
-    init_db()
-    with get_conn() as conn:
-        ids = get_item_ids(conn)
+async def update_prices_async(ids: Optional[List[int]] = None):
+    if not ids:
+        init_db()
+        with get_conn() as conn:
+            ids = get_item_ids(conn)
 
     if not ids:
         print("No item IDs found. Run update_recipes.py first.")
@@ -128,21 +138,43 @@ async def update_prices_async():
                     if listings is None:
                         listings = item.get("listingsCount")
 
+                    daily_sales = first_key(
+                        item,
+                        [
+                            "regularSaleVelocity",
+                            "saleVelocity",
+                            "dailySales",
+                        ],
+                    )
+
                     last_updated = normalize_timestamp(
                         first_key(item, ["lastUploadTime", "lastUpload", "lastUpdated", "last_updated"])
                     )
 
                     world_id = item.get("worldID") or item.get("worldId")
+                    world_name = first_key(item, ["worldName", "world", "world_name"])
+                    if not world_name:
+                        world_name = first_nested_key(item.get("listings", []), ["worldName", "world_name"])
+                    if not world_name:
+                        world_name = first_nested_key(item.get("recentHistory", []), ["worldName", "world_name"])
+
+                    sale_price = first_nested_key(
+                        item.get("recentHistory", []),
+                        ["pricePerUnit", "price", "total"],
+                    )
 
                     rows.append(
                         (
                             int(item_id),
                             WORLD,
-                            int(world_id) if isinstance(world_id, int) else None,
-                            float(p50) if p50 is not None else None,
-                            float(min_price) if min_price is not None else None,
-                            int(listings) if listings is not None else None,
-                            int(last_updated) if last_updated is not None else None,
+                            int(world_id) if isinstance(world_id, int) else 0,
+                            str(world_name),
+                            float(p50) if p50 is not None else 0,
+                            float(min_price) if min_price is not None else 0,
+                            float(sale_price) if sale_price is not None else 0,
+                            int(listings) if listings is not None else 0,
+                            float(daily_sales) if daily_sales is not None else 0,
+                            int(last_updated) if last_updated is not None else 0,
                         )
                     )
 
@@ -154,17 +186,25 @@ async def update_prices_async():
         cur.executemany(
             """
             INSERT OR REPLACE INTO prices(
-                item_id, world, world_id, p50_price, min_price, listings, last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?);
+                item_id, world, world_id, world_name, p50_price, min_price, sale_price, listings, daily_sales, last_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             rows,
         )
 
     print(f"Updated prices: {len(rows)} items for world {WORLD}")
+    return len(rows)
 
 
 def update_prices():
     asyncio.run(update_prices_async())
+
+
+def update_prices_for_ids(ids: List[int]) -> int:
+    unique_ids = sorted(set(int(item_id) for item_id in ids if int(item_id) > 0))
+    if not unique_ids:
+        return 0
+    return int(asyncio.run(update_prices_async(unique_ids)) or 0)
 
 
 if __name__ == "__main__":

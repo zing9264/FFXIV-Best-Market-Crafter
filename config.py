@@ -10,8 +10,9 @@ UNIVERSALIS_BASE_URL = os.environ.get("UNIVERSALIS_BASE_URL", "https://universal
 XIVAPI_BASE_URL = os.environ.get("XIVAPI_BASE_URL", "https://xivapi.com")
 XIVAPI_KEY = os.environ.get("XIVAPI_KEY")  # optional
 
-# Target world (can be any valid world name supported by Universalis)
-WORLD = os.environ.get("FF14_WORLD", "Phoenix")
+# Target market scope for Universalis.
+# This can be a single world (e.g. "Asura") or an aggregate scope (e.g. "繁中服", "Japan").
+WORLD = os.environ.get("FF14_WORLD", "繁中服")
 
 # Pricing behavior
 # SELL_PRICE_FIELD: which field to use as "market成交價格"
