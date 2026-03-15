@@ -6,6 +6,64 @@
 - 抓 Universalis 價格
 - 用網頁查成品、素材、成本與價差
 
+## 前置需求
+
+在開始前，至少要有：
+
+- Windows 可執行的 `XivExdUnpacker`
+- WSL Ubuntu
+- 專案自己的 Python 虛擬環境 `.venv-wsl`
+
+### XivExdUnpacker 安裝方式
+
+官方來源：
+
+- GitHub: `Souma-Sumire/XivExdUnpacker`
+- Repo: https://github.com/Souma-Sumire/XivExdUnpacker
+- Releases: https://github.com/Souma-Sumire/XivExdUnpacker/releases
+
+本專案不包含 `XivExdUnpacker` binary，請自行從官方 release 頁下載並解壓。
+
+目前這個專案假設你已經把 `XivExdUnpacker` 解壓到 Windows 目錄：
+
+```text
+C:\Users\zing9\Downloads\XivExdUnpacker-win-x64
+```
+
+預設會從這裡找解包後的繁中資料：
+
+```text
+C:\Users\zing9\Downloads\XivExdUnpacker-win-x64\rawexd\tc\Item.csv
+C:\Users\zing9\Downloads\XivExdUnpacker-win-x64\rawexd\tc\Recipe.csv
+```
+
+如果你放在別的位置，請修改 [`config.py`](/mnt/d/FF%20tools/bestmarketcrafter/config.py)：
+
+- `UNPACKER_DIR`
+- `RAWEXD_TC_DIR`
+- `ITEM_CSV_PATH`
+- `RECIPE_CSV_PATH`
+
+最少通常只要改：
+
+- `UNPACKER_DIR`
+
+後面幾個預設路徑就會跟著變。
+
+## 致謝
+
+本專案得以實現，感謝以下服務與工具：
+
+- Universalis
+  - 提供 Final Fantasy XIV 市場看板資料 API
+  - Website: https://universalis.app/
+  - Docs: https://docs.universalis.app/
+
+- XivExdUnpacker
+  - 用於匯出繁中客戶端的 `Item.csv` 與 `Recipe.csv`
+  - Repo: https://github.com/Souma-Sumire/XivExdUnpacker
+  - Releases: https://github.com/Souma-Sumire/XivExdUnpacker/releases
+
 ## 目前正式流程
 
 ### 1. 更新食譜與道具資料

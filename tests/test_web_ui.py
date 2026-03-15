@@ -174,12 +174,11 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
         self.assertIn("count=6", response.headers["Location"])
         mock_update.assert_called_once_with([100, 200, 300], ["繁中服", "鳳凰"])
 
-    def test_choose_price_and_daily_sales_ignore_zero_defaults(self):
-        self.assertEqual(self.web_ui.choose_price(0, 500, "p50"), 500)
-        self.assertIsNone(self.web_ui.choose_price(800, 0, "min"))
-        self.assertIsNone(self.web_ui.choose_price(0, 0, "p50"))
-        self.assertIsNone(self.web_ui.normalize_positive_value(0))
-        self.assertEqual(self.web_ui.normalize_positive_value(2.5), 2.5)
+    def test_normalize_nonzero_value_ignores_zero_defaults(self):
+        self.assertEqual(self.web_ui.normalize_nonzero_value(500), 500)
+        self.assertIsNone(self.web_ui.normalize_nonzero_value(0))
+        self.assertIsNone(self.web_ui.normalize_nonzero_value(None))
+        self.assertEqual(self.web_ui.normalize_nonzero_value(2.5), 2.5)
 
     def test_load_recipe_detail_includes_product_sale_price(self):
         with self.db.get_conn() as conn:

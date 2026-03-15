@@ -100,7 +100,7 @@ async def fetch_prices(session: aiohttp.ClientSession, limiter: RateLimiter, ids
     await limiter.wait()
     ids_param = ",".join(str(i) for i in ids)
     url = f"{UNIVERSALIS_BASE_URL}/{world}/{ids_param}"
-    async with session.get(url, timeout=30) as resp:
+    async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
         resp.raise_for_status()
         return await resp.json()
 
@@ -173,14 +173,15 @@ async def fetch_batch_rows(
                 rows.append(row)
         return rows
     except aiohttp.ClientResponseError as exc:
-        if len(ids) > 1 and exc.status in {429, 500, 502, 503, 504}:
+        if exc.status in {429, 500, 502, 503, 504}:
             if retry_limit > 0:
                 await asyncio.sleep((4 - retry_limit) * 1.5 + 1)
                 return await fetch_batch_rows(session, limiter, ids, world, retry_limit - 1)
-            midpoint = len(ids) // 2
-            left = await fetch_batch_rows(session, limiter, ids[:midpoint], world, 2)
-            right = await fetch_batch_rows(session, limiter, ids[midpoint:], world, 2)
-            return left + right
+            if len(ids) > 1:
+                midpoint = len(ids) // 2
+                left = await fetch_batch_rows(session, limiter, ids[:midpoint], world, 2)
+                right = await fetch_batch_rows(session, limiter, ids[midpoint:], world, 2)
+                return left + right
         raise
 
 

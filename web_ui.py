@@ -7,13 +7,14 @@ import time
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
-from config import DB_PATH, DISPLAY_WORLD, LOWEST_WORLD, WORLD
+from config import DB_PATH, DISPLAY_WORLD, LOWEST_WORLD
 from db import get_conn, init_db
 from update_prices import update_prices_async, update_prices_for_worlds
 from update_profits import rebuild_profits
 
 
 app = Flask(__name__)
+init_db()
 
 refresh_state_lock = threading.Lock()
 refresh_thread: threading.Thread | None = None
@@ -51,20 +52,10 @@ def fmt_num(value: float | None) -> str:
     return f"{value:,.2f}"
 
 
-def normalize_price_value(value: float | None) -> float | None:
+def normalize_nonzero_value(value: float | None) -> float | None:
     if value is None:
         return None
     return value if value > 0 else None
-
-
-def normalize_positive_value(value: float | None) -> float | None:
-    if value is None:
-        return None
-    return value if value > 0 else None
-
-
-def choose_price(_p50_price: float | None, min_price: float | None, _field: str = "min") -> float | None:
-    return normalize_price_value(min_price)
 
 
 def update_refresh_state(**changes) -> None:
@@ -216,9 +207,9 @@ def get_latest_prices(conn):
             "name": row[1] or f"Item {row[0]}",
             "world_name": row[2] or "-",
             "min_price": row[3],
-            "sale_price": normalize_price_value(row[4]),
+            "sale_price": normalize_nonzero_value(row[4]),
             "listings": row[5],
-            "daily_sales": normalize_positive_value(row[6]),
+            "daily_sales": normalize_nonzero_value(row[6]),
             "last_updated": fmt_ts(row[7]),
         }
         for row in cur.fetchall()
@@ -340,8 +331,8 @@ def load_recipe_detail(conn, item_id: int):
 
     has_recipe = row[2] is not None
     yield_qty = row[2] or 1
-    product_sell_price = normalize_price_value(row[4])
-    product_sale_price = normalize_price_value(row[5])
+    product_sell_price = normalize_nonzero_value(row[4])
+    product_sale_price = normalize_nonzero_value(row[5])
 
     cur.execute(
         """
@@ -370,7 +361,7 @@ def load_recipe_detail(conn, item_id: int):
     materials_total = 0.0
     has_all_prices = True
     for ing in cur.fetchall():
-        unit_price = normalize_price_value(ing[4])
+        unit_price = normalize_nonzero_value(ing[4])
         line_total = unit_price * ing[2] if unit_price is not None else None
         if line_total is None:
             has_all_prices = False
@@ -382,13 +373,13 @@ def load_recipe_detail(conn, item_id: int):
                 "name": ing[1] or f"Item {ing[0]}",
                 "qty": ing[2],
                 "lowest_world_name": ing[3] or "-",
-                "lowest_price": normalize_price_value(ing[4]),
-                "display_price": normalize_price_value(ing[5]),
+                "lowest_price": normalize_nonzero_value(ing[4]),
+                "display_price": normalize_nonzero_value(ing[5]),
                 "display_world_name": ing[6] or DISPLAY_WORLD,
                 "unit_price": unit_price,
                 "line_total": line_total,
                 "listings": ing[7],
-                "daily_sales": normalize_positive_value(ing[8]),
+                "daily_sales": normalize_nonzero_value(ing[8]),
                 "last_updated": fmt_ts(ing[9]),
             }
         )
@@ -416,7 +407,7 @@ def load_recipe_detail(conn, item_id: int):
             "sale_price": product_sale_price,
             "sell_price": product_sell_price,
             "listings": row[6],
-            "daily_sales": normalize_positive_value(row[7]),
+            "daily_sales": normalize_nonzero_value(row[7]),
             "last_updated": fmt_ts(row[8]),
         },
         "ingredients": ingredients,
@@ -471,9 +462,9 @@ def get_top_profit_rows(conn, limit: int = 100, offset: int = 0):
                 "item_id": row[0],
                 "name": row[1] or f"Item {row[0]}",
                 "yield": row[2] or 1,
-                "sell_price": normalize_price_value(row[3]),
+                "sell_price": normalize_nonzero_value(row[3]),
                 "world_name": row[4] or DISPLAY_WORLD,
-                "daily_sales": normalize_positive_value(row[5]),
+                "daily_sales": normalize_nonzero_value(row[5]),
                 "unit_material_cost": row[6],
                 "price_gap": row[7],
             }
@@ -482,7 +473,6 @@ def get_top_profit_rows(conn, limit: int = 100, offset: int = 0):
 
 
 def load_dashboard_data():
-    init_db()
     tab = request.args.get("tab", "lookup").strip() or "lookup"
     query = request.args.get("q", "").strip()
     selected_id = request.args.get("item_id", "").strip()
@@ -511,7 +501,6 @@ def load_dashboard_data():
     total_pages = max(1, (total_profit_rows + per_page - 1) // per_page) if tab == "ranking" else 1
 
     return {
-        "world": WORLD,
         "display_world": DISPLAY_WORLD,
         "lowest_world": LOWEST_WORLD,
         "db_path": DB_PATH,
@@ -549,7 +538,6 @@ def refresh_recipe_prices():
 
     item_id = int(item_id_raw)
     try:
-        init_db()
         with get_conn() as conn:
             ids = get_recipe_item_ids(conn, item_id)
         refreshed = update_prices_for_worlds(ids, [LOWEST_WORLD, DISPLAY_WORLD])

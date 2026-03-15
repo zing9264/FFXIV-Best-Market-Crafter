@@ -627,7 +627,7 @@
                 {% for row in top_profits %}
                   <tr>
                     <td>{{ ((ranking_page - 1) * ranking_per_page) + loop.index }}</td>
-                    <td><a href="/?tab=lookup&item_id={{ row.item_id }}&q={{ row.name }}" style="color: inherit;">{{ row.name }}</a></td>
+                    <td><a href="/?tab=lookup&item_id={{ row.item_id }}&q={{ row.name | urlencode }}" style="color: inherit;">{{ row.name }}</a></td>
                     <td class="muted">{{ row.item_id }}</td>
                     <td>{{ row.yield }}</td>
                     <td class="money">{{ fmt_num(row.sell_price) }}</td>
