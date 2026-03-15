@@ -17,20 +17,10 @@ LOWEST_WORLD = os.environ.get("FF14_LOWEST_WORLD", "繁中服")
 DISPLAY_WORLD = os.environ.get("FF14_DISPLAY_WORLD", "鳳凰")
 WORLD = os.environ.get("FF14_WORLD", LOWEST_WORLD)
 
-# Pricing behavior
-# The current UI and cost model use minimum listing price directly.
-SELL_PRICE_FIELD = os.environ.get("FF14_SELL_PRICE_FIELD", "min")
-BUY_PRICE_FIELD = os.environ.get("FF14_BUY_PRICE_FIELD", "min")
-
 # Universalis batching / rate limiting
 MAX_BATCH_SIZE = int(os.environ.get("FF14_MAX_BATCH_SIZE", "100"))
 MAX_RPS = float(os.environ.get("FF14_MAX_RPS", "15"))  # <= 15 req/s
 MAX_CONCURRENCY = int(os.environ.get("FF14_MAX_CONCURRENCY", "8"))
-
-# Profit ranking
-TOP_N = int(os.environ.get("FF14_TOP_N", "10"))
-MIN_PROFIT = float(os.environ.get("FF14_MIN_PROFIT", "0"))
-MAX_LISTINGS = int(os.environ.get("FF14_MAX_LISTINGS", "0"))  # 0 means no limit
 
 # Optional: extra item IDs to always refresh prices for
 EXTRA_ITEM_IDS = [

@@ -6,6 +6,34 @@ Build a local FF14 crafting profit dashboard with:
 - Universalis market data refresh
 - A web UI for recipe lookup, ingredient pricing, and profit comparison
 
+## Official Recipe Update Flow
+The current recipe/item refresh workflow is manual EXD unpack + local import.
+
+### Step 1. Re-extract TW client data on Windows
+
+```powershell
+cd C:\Users\zing9\Downloads\XivExdUnpacker-win-x64
+.\XivExdUnpacker.exe --language tc --sheets Item Recipe --clear
+```
+
+This regenerates:
+- `Item.csv`
+- `Recipe.csv`
+
+### Step 2. Re-import into local SQLite from WSL
+
+```bash
+cd /mnt/d/FF\ tools/bestmarketcrafter
+source .venv-wsl/bin/activate
+python import_tc_exd.py
+```
+
+This is the only supported recipe refresh path right now.
+
+Not used anymore:
+- API recipe crawling
+- old `update_recipes.py` flow
+
 ## Current Data Rules
 ### Core pricing model
 `prices` now stores two separate Universalis scopes for the same item:

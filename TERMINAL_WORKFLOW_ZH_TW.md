@@ -247,6 +247,27 @@ source .venv-wsl/bin/activate
 python update_prices.py
 ```
 
+如果你要更新這個專案的食譜/道具資料，現在正式流程是：
+
+Windows 端先重新解包：
+
+```powershell
+cd C:\Users\zing9\Downloads\XivExdUnpacker-win-x64
+.\XivExdUnpacker.exe --language tc --sheets Item Recipe --clear
+```
+
+然後回 WSL 匯入：
+
+```bash
+cd /mnt/d/FF\ tools/bestmarketcrafter
+source .venv-wsl/bin/activate
+python import_tc_exd.py
+```
+
+也就是說，現在 recipe / item 更新不走舊的 API 抓法，而是：
+- Windows 解包 `Item.csv` / `Recipe.csv`
+- WSL 匯入 `db.sqlite`
+
 ## 9. 關掉視窗後怎麼接回來
 
 情境：

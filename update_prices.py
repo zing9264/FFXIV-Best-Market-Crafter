@@ -7,7 +7,6 @@ from typing import Callable, Iterable, List, Optional
 import aiohttp
 
 from config import (
-    DB_PATH,
     DISPLAY_WORLD,
     EXTRA_ITEM_IDS,
     LOWEST_WORLD,
@@ -196,7 +195,7 @@ async def update_prices_async(
             ids = get_item_ids(conn)
 
     if not ids:
-        print("No item IDs found. Run update_recipes.py first.")
+        print("No item IDs found. Import recipes first.")
         return
 
     batches = batch_ids(ids, MAX_BATCH_SIZE)
