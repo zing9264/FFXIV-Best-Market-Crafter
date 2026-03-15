@@ -70,10 +70,18 @@ def init_db():
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS profits (
-                item_id INTEGER PRIMARY KEY,
-                cost REAL,
-                profit REAL,
-                updated INTEGER
+                item_id INTEGER,
+                world TEXT,
+                world_name TEXT DEFAULT '',
+                listing_price REAL DEFAULT 0,
+                sale_price REAL DEFAULT 0,
+                material_total REAL DEFAULT 0,
+                unit_material_cost REAL DEFAULT 0,
+                profit_by_listing REAL DEFAULT 0,
+                profit_by_sale REAL DEFAULT 0,
+                daily_sales REAL DEFAULT 0,
+                updated INTEGER DEFAULT 0,
+                PRIMARY KEY (item_id, world)
             );
             """
         )
@@ -139,3 +147,39 @@ def init_db():
             cur.execute("ALTER TABLE prices_new RENAME TO prices;")
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_prices_world_item ON prices(world, item_id);")
+        cur.execute("PRAGMA table_info(profits);")
+        profit_info = {row[1]: row for row in cur.fetchall()}
+        expected_profit_columns = [
+            "item_id",
+            "world",
+            "world_name",
+            "listing_price",
+            "sale_price",
+            "material_total",
+            "unit_material_cost",
+            "profit_by_listing",
+            "profit_by_sale",
+            "daily_sales",
+            "updated",
+        ]
+        if list(profit_info) != expected_profit_columns:
+            cur.execute("DROP TABLE IF EXISTS profits;")
+            cur.execute(
+                """
+                CREATE TABLE profits (
+                    item_id INTEGER,
+                    world TEXT,
+                    world_name TEXT DEFAULT '',
+                    listing_price REAL DEFAULT 0,
+                    sale_price REAL DEFAULT 0,
+                    material_total REAL DEFAULT 0,
+                    unit_material_cost REAL DEFAULT 0,
+                    profit_by_listing REAL DEFAULT 0,
+                    profit_by_sale REAL DEFAULT 0,
+                    daily_sales REAL DEFAULT 0,
+                    updated INTEGER DEFAULT 0,
+                    PRIMARY KEY (item_id, world)
+                );
+                """
+            )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_profits_world_listing ON profits(world, profit_by_listing DESC);")

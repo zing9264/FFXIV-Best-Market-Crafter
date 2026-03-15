@@ -10,15 +10,17 @@ UNIVERSALIS_BASE_URL = os.environ.get("UNIVERSALIS_BASE_URL", "https://universal
 XIVAPI_BASE_URL = os.environ.get("XIVAPI_BASE_URL", "https://xivapi.com")
 XIVAPI_KEY = os.environ.get("XIVAPI_KEY")  # optional
 
-# Target market scope for Universalis.
-# This can be a single world (e.g. "Asura") or an aggregate scope (e.g. "繁中服", "Japan").
-WORLD = os.environ.get("FF14_WORLD", "繁中服")
+# Market scopes for Universalis.
+# `LOWEST_WORLD` is the aggregate scope used to discover the cheapest source world.
+# `DISPLAY_WORLD` is the specific world shown for product pricing in the UI.
+LOWEST_WORLD = os.environ.get("FF14_LOWEST_WORLD", "繁中服")
+DISPLAY_WORLD = os.environ.get("FF14_DISPLAY_WORLD", "鳳凰")
+WORLD = os.environ.get("FF14_WORLD", LOWEST_WORLD)
 
 # Pricing behavior
-# SELL_PRICE_FIELD: which field to use as "market成交價格"
-# BUY_PRICE_FIELD: which field to use as "市場購買價"
-SELL_PRICE_FIELD = os.environ.get("FF14_SELL_PRICE_FIELD", "p50")  # "p50" or "min"
-BUY_PRICE_FIELD = os.environ.get("FF14_BUY_PRICE_FIELD", "min")    # "p50" or "min"
+# The current UI and cost model use minimum listing price directly.
+SELL_PRICE_FIELD = os.environ.get("FF14_SELL_PRICE_FIELD", "min")
+BUY_PRICE_FIELD = os.environ.get("FF14_BUY_PRICE_FIELD", "min")
 
 # Universalis batching / rate limiting
 MAX_BATCH_SIZE = int(os.environ.get("FF14_MAX_BATCH_SIZE", "100"))

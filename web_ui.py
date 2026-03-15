@@ -1,21 +1,48 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+import threading
+import time
 
-from flask import Flask, redirect, render_template, request, url_for
+from flask import Flask, jsonify, redirect, render_template, request, url_for
 
-from config import BUY_PRICE_FIELD, DB_PATH, SELL_PRICE_FIELD, WORLD
+from config import DB_PATH, DISPLAY_WORLD, LOWEST_WORLD, WORLD
 from db import get_conn, init_db
-from update_prices import update_prices_for_ids
+from update_prices import update_prices_async, update_prices_for_worlds
+from update_profits import rebuild_profits
 
 
 app = Flask(__name__)
+
+refresh_state_lock = threading.Lock()
+refresh_thread: threading.Thread | None = None
+refresh_state = {
+    "running": False,
+    "phase": "idle",
+    "message": "尚未開始全量更新",
+    "world": "",
+    "total_ids": 0,
+    "total_batches": 0,
+    "completed_batches": 0,
+    "updated_rows": 0,
+    "profits_updated": 0,
+    "started_at": None,
+    "finished_at": None,
+    "error": "",
+}
 
 
 def fmt_ts(ts: int | None) -> str:
     if not ts:
         return "-"
     return dt.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def fmt_local_ts(ts: float | None) -> str:
+    if not ts:
+        return "-"
+    return dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def fmt_num(value: float | None) -> str:
@@ -36,29 +63,129 @@ def normalize_positive_value(value: float | None) -> float | None:
     return value if value > 0 else None
 
 
-def choose_price(p50_price: float | None, min_price: float | None, field: str) -> float | None:
-    p50_price = normalize_price_value(p50_price)
-    min_price = normalize_price_value(min_price)
-    if field == "min":
-        return min_price if min_price is not None else p50_price
-    return p50_price if p50_price is not None else min_price
+def choose_price(_p50_price: float | None, min_price: float | None, _field: str = "min") -> float | None:
+    return normalize_price_value(min_price)
+
+
+def update_refresh_state(**changes) -> None:
+    with refresh_state_lock:
+        refresh_state.update(changes)
+
+
+def get_refresh_state_snapshot() -> dict:
+    with refresh_state_lock:
+        snapshot = dict(refresh_state)
+    total_batches = snapshot.get("total_batches") or 0
+    completed_batches = snapshot.get("completed_batches") or 0
+    snapshot["progress_pct"] = round((completed_batches / total_batches) * 100, 1) if total_batches else 0.0
+    snapshot["started_at_text"] = fmt_local_ts(snapshot.get("started_at"))
+    snapshot["finished_at_text"] = fmt_local_ts(snapshot.get("finished_at"))
+    return snapshot
+
+
+def start_full_refresh_job() -> bool:
+    global refresh_thread
+    with refresh_state_lock:
+        if refresh_state["running"]:
+            return False
+        refresh_state.update(
+            {
+                "running": True,
+                "phase": "fetching_prices",
+                "message": "準備開始全量更新",
+                "world": LOWEST_WORLD,
+                "total_ids": 0,
+                "total_batches": 0,
+                "completed_batches": 0,
+                "updated_rows": 0,
+                "profits_updated": 0,
+                "started_at": time.time(),
+                "finished_at": None,
+                "error": "",
+            }
+        )
+
+    refresh_thread = threading.Thread(target=run_full_refresh_job, daemon=True)
+    refresh_thread.start()
+    return True
+
+
+def run_full_refresh_job() -> None:
+    worlds = [LOWEST_WORLD, DISPLAY_WORLD]
+    total_updated = 0
+
+    try:
+        for world in worlds:
+            update_refresh_state(
+                phase="fetching_prices",
+                message=f"正在更新 {world} 價格",
+                world=world,
+                total_ids=0,
+                total_batches=0,
+                completed_batches=0,
+            )
+
+            def on_progress(progress: dict) -> None:
+                update_refresh_state(
+                    phase=progress.get("phase", "fetching_prices"),
+                    message=f"正在更新 {world} 價格",
+                    world=world,
+                    total_ids=progress.get("total_ids", 0),
+                    total_batches=progress.get("total_batches", 0),
+                    completed_batches=progress.get("completed_batches", 0),
+                    updated_rows=total_updated + progress.get("updated_rows", 0),
+                )
+
+            updated = int(asyncio.run(update_prices_async(world=world, progress_callback=on_progress)) or 0)
+            total_updated += updated
+            update_refresh_state(
+                message=f"{world} 價格更新完成",
+                world=world,
+                updated_rows=total_updated,
+            )
+
+        update_refresh_state(
+            phase="rebuilding_profits",
+            message="價格更新完成，正在重算總價差",
+            world=DISPLAY_WORLD,
+            total_batches=0,
+            completed_batches=0,
+        )
+        profits_updated = rebuild_profits()
+        update_refresh_state(
+            running=False,
+            phase="done",
+            message="全量更新完成",
+            world=DISPLAY_WORLD,
+            updated_rows=total_updated,
+            profits_updated=profits_updated,
+            finished_at=time.time(),
+        )
+    except Exception as exc:
+        update_refresh_state(
+            running=False,
+            phase="error",
+            message="全量更新失敗",
+            error=str(exc),
+            finished_at=time.time(),
+        )
 
 
 def get_counts(conn):
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM items;")
-    items_count = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM recipes;")
     recipes_count = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM recipe_ingredients;")
     ingredients_count = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM prices WHERE world=?;", (WORLD,))
-    prices_count = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM prices WHERE world=?;", (LOWEST_WORLD,))
+    lowest_prices_count = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM prices WHERE world=?;", (DISPLAY_WORLD,))
+    display_prices_count = cur.fetchone()[0]
     return {
-        "items": items_count,
         "recipes": recipes_count,
         "ingredients": ingredients_count,
-        "prices": prices_count,
+        "prices_lowest": lowest_prices_count,
+        "prices_display": display_prices_count,
     }
 
 
@@ -70,7 +197,6 @@ def get_latest_prices(conn):
             p.item_id,
             i.name,
             p.world_name,
-            p.p50_price,
             p.min_price,
             p.sale_price,
             p.listings,
@@ -82,19 +208,18 @@ def get_latest_prices(conn):
         ORDER BY p.last_updated DESC NULLS LAST
         LIMIT 50;
         """,
-        (WORLD,),
+        (LOWEST_WORLD,),
     )
     return [
         {
             "item_id": row[0],
             "name": row[1] or f"Item {row[0]}",
             "world_name": row[2] or "-",
-            "p50_price": row[3],
-            "min_price": row[4],
-            "sale_price": normalize_price_value(row[5]),
-            "listings": row[6],
-            "daily_sales": normalize_positive_value(row[7]),
-            "last_updated": fmt_ts(row[8]),
+            "min_price": row[3],
+            "sale_price": normalize_price_value(row[4]),
+            "listings": row[5],
+            "daily_sales": normalize_positive_value(row[6]),
+            "last_updated": fmt_ts(row[7]),
         }
         for row in cur.fetchall()
     ]
@@ -196,19 +321,18 @@ def load_recipe_detail(conn, item_id: int):
             i.item_id,
             i.name,
             r.yield,
-            p.world_name,
-            p.p50_price,
-            p.min_price,
-            p.sale_price,
-            p.listings,
-            p.daily_sales,
-            p.last_updated
+            dp.world_name,
+            dp.min_price,
+            dp.sale_price,
+            dp.listings,
+            dp.daily_sales,
+            dp.last_updated
         FROM items i
         LEFT JOIN recipes r ON r.output_item_id = i.item_id
-        LEFT JOIN prices p ON p.item_id = i.item_id AND p.world = ?
+        LEFT JOIN prices dp ON dp.item_id = i.item_id AND dp.world = ?
         WHERE i.item_id = ?;
         """,
-        (WORLD, item_id),
+        (DISPLAY_WORLD, item_id),
     )
     row = cur.fetchone()
     if not row:
@@ -216,8 +340,8 @@ def load_recipe_detail(conn, item_id: int):
 
     has_recipe = row[2] is not None
     yield_qty = row[2] or 1
-    product_sell_price = choose_price(row[4], row[5], SELL_PRICE_FIELD)
-    product_sale_price = normalize_price_value(row[6])
+    product_sell_price = normalize_price_value(row[4])
+    product_sale_price = normalize_price_value(row[5])
 
     cur.execute(
         """
@@ -225,25 +349,28 @@ def load_recipe_detail(conn, item_id: int):
             ri.ingredient_item_id,
             i.name,
             ri.qty,
-            p.p50_price,
-            p.min_price,
-            p.listings,
-            p.daily_sales,
-            p.last_updated
+            fp.world_name,
+            fp.min_price,
+            dp.min_price,
+            dp.world_name,
+            fp.listings,
+            fp.daily_sales,
+            fp.last_updated
         FROM recipe_ingredients ri
         LEFT JOIN items i ON i.item_id = ri.ingredient_item_id
-        LEFT JOIN prices p ON p.item_id = ri.ingredient_item_id AND p.world = ?
+        LEFT JOIN prices fp ON fp.item_id = ri.ingredient_item_id AND fp.world = ?
+        LEFT JOIN prices dp ON dp.item_id = ri.ingredient_item_id AND dp.world = ?
         WHERE ri.output_item_id = ?
         ORDER BY ri.qty DESC, ri.ingredient_item_id ASC;
         """,
-        (WORLD, item_id),
+        (LOWEST_WORLD, DISPLAY_WORLD, item_id),
     )
 
     ingredients = []
     materials_total = 0.0
     has_all_prices = True
     for ing in cur.fetchall():
-        unit_price = choose_price(ing[3], ing[4], BUY_PRICE_FIELD)
+        unit_price = normalize_price_value(ing[4])
         line_total = unit_price * ing[2] if unit_price is not None else None
         if line_total is None:
             has_all_prices = False
@@ -254,13 +381,15 @@ def load_recipe_detail(conn, item_id: int):
                 "item_id": ing[0],
                 "name": ing[1] or f"Item {ing[0]}",
                 "qty": ing[2],
-                "p50_price": ing[3],
-                "min_price": ing[4],
+                "lowest_world_name": ing[3] or "-",
+                "lowest_price": normalize_price_value(ing[4]),
+                "display_price": normalize_price_value(ing[5]),
+                "display_world_name": ing[6] or DISPLAY_WORLD,
                 "unit_price": unit_price,
                 "line_total": line_total,
-                "listings": ing[5],
-                "daily_sales": normalize_positive_value(ing[6]),
-                "last_updated": fmt_ts(ing[7]),
+                "listings": ing[7],
+                "daily_sales": normalize_positive_value(ing[8]),
+                "last_updated": fmt_ts(ing[9]),
             }
         )
 
@@ -282,20 +411,20 @@ def load_recipe_detail(conn, item_id: int):
         "yield": yield_qty,
         "has_recipe": has_recipe,
         "product": {
-            "p50_price": row[3],
-            "world_name": row[3] or "-",
-            "p50_price": row[4],
-            "min_price": row[5],
+            "world_name": row[3] or DISPLAY_WORLD,
+            "min_price": row[4],
             "sale_price": product_sale_price,
             "sell_price": product_sell_price,
-            "listings": row[7],
-            "daily_sales": normalize_positive_value(row[8]),
-            "last_updated": fmt_ts(row[9]),
+            "listings": row[6],
+            "daily_sales": normalize_positive_value(row[7]),
+            "last_updated": fmt_ts(row[8]),
         },
         "ingredients": ingredients,
         "materials_total": materials_total if has_all_prices else None,
         "unit_material_cost": unit_material_cost,
         "price_gap": price_gap,
+        "display_world": DISPLAY_WORLD,
+        "lowest_world": LOWEST_WORLD,
     }
 
 
@@ -307,84 +436,49 @@ def get_recipe_item_ids(conn, item_id: int) -> list[int]:
     return sorted(set(int(value) for value in ids if int(value) > 0))
 
 
-def get_top_profit_rows(conn, limit: int = 100):
+def get_profit_count(conn) -> int:
     cur = conn.cursor()
-    query = """
-        SELECT
-            r.output_item_id,
-            i.name,
-            r.yield,
-            op.p50_price,
-            op.min_price,
-            op.daily_sales,
-            COUNT(ri.ingredient_item_id) AS ingredient_count,
-            SUM(
-                CASE
-                    WHEN COALESCE(
-                        CASE WHEN ? = 'min' THEN ip.min_price ELSE ip.p50_price END,
-                        CASE WHEN ? = 'min' THEN ip.p50_price ELSE ip.min_price END
-                    ) IS NULL THEN NULL
-                    ELSE ri.qty * COALESCE(
-                        CASE WHEN ? = 'min' THEN ip.min_price ELSE ip.p50_price END,
-                        CASE WHEN ? = 'min' THEN ip.p50_price ELSE ip.min_price END
-                    )
-                END
-            ) AS material_total
-        FROM recipes r
-        JOIN items i ON i.item_id = r.output_item_id
-        LEFT JOIN recipe_ingredients ri ON ri.output_item_id = r.output_item_id
-        LEFT JOIN prices ip ON ip.item_id = ri.ingredient_item_id AND ip.world = ?
-        LEFT JOIN prices op ON op.item_id = r.output_item_id AND op.world = ?
-        GROUP BY
-            r.output_item_id,
-            i.name,
-            r.yield,
-            op.p50_price,
-            op.min_price,
-            op.daily_sales
-        HAVING ingredient_count > 0
-           AND COUNT(ip.item_id) = ingredient_count
-           AND COALESCE(
-                CASE WHEN ? = 'min' THEN op.min_price ELSE op.p50_price END,
-                CASE WHEN ? = 'min' THEN op.p50_price ELSE op.min_price END
-           ) IS NOT NULL
-        ORDER BY (
-            COALESCE(
-                CASE WHEN ? = 'min' THEN op.min_price ELSE op.p50_price END,
-                CASE WHEN ? = 'min' THEN op.p50_price ELSE op.min_price END
-            ) - (material_total / r.yield)
-        ) DESC
-        LIMIT ?;
-    """
+    cur.execute("SELECT COUNT(*) FROM profits WHERE world=?;", (DISPLAY_WORLD,))
+    return int(cur.fetchone()[0] or 0)
+
+
+def get_top_profit_rows(conn, limit: int = 100, offset: int = 0):
+    cur = conn.cursor()
     cur.execute(
-        query,
-        (
-            BUY_PRICE_FIELD,
-            BUY_PRICE_FIELD,
-            BUY_PRICE_FIELD,
-            BUY_PRICE_FIELD,
-            WORLD,
-            WORLD,
-            SELL_PRICE_FIELD,
-            SELL_PRICE_FIELD,
-            SELL_PRICE_FIELD,
-            SELL_PRICE_FIELD,
-            limit,
-        ),
+        """
+        SELECT
+            p.item_id,
+            i.name,
+            r.yield,
+            p.listing_price,
+            p.world_name,
+            p.daily_sales,
+            p.unit_material_cost,
+            p.profit_by_listing
+        FROM profits p
+        JOIN items i ON i.item_id = p.item_id
+        LEFT JOIN recipes r ON r.output_item_id = p.item_id
+        WHERE p.world = ?
+        ORDER BY p.profit_by_listing DESC, p.item_id ASC
+        LIMIT ? OFFSET ?;
+        """,
+        (DISPLAY_WORLD, limit, offset),
     )
-    return [
-        {
-            "item_id": row[0],
-            "name": row[1] or f"Item {row[0]}",
-            "yield": row[2] or 1,
-            "sell_price": choose_price(row[3], row[4], SELL_PRICE_FIELD),
-            "daily_sales": normalize_positive_value(row[5]),
-            "unit_material_cost": (row[7] / (row[2] or 1)) if row[7] is not None else None,
-            "price_gap": choose_price(row[3], row[4], SELL_PRICE_FIELD) - (row[7] / (row[2] or 1)),
-        }
-        for row in cur.fetchall()
-        if row[7] is not None
-    ]
+    rows = []
+    for row in cur.fetchall():
+        rows.append(
+            {
+                "item_id": row[0],
+                "name": row[1] or f"Item {row[0]}",
+                "yield": row[2] or 1,
+                "sell_price": normalize_price_value(row[3]),
+                "world_name": row[4] or DISPLAY_WORLD,
+                "daily_sales": normalize_positive_value(row[5]),
+                "unit_material_cost": row[6],
+                "price_gap": row[7],
+            }
+        )
+    return rows
 
 
 def load_dashboard_data():
@@ -394,6 +488,10 @@ def load_dashboard_data():
     selected_id = request.args.get("item_id", "").strip()
     refresh_status = request.args.get("refresh", "").strip()
     refreshed_count = request.args.get("count", "").strip()
+    page_raw = request.args.get("page", "1").strip()
+    page = int(page_raw) if page_raw.isdigit() and int(page_raw) > 0 else 1
+    per_page = 100
+    offset = (page - 1) * per_page
 
     with get_conn() as conn:
         counts = get_counts(conn)
@@ -407,10 +505,15 @@ def load_dashboard_data():
         elif len(search_results) == 1:
             detail = load_recipe_detail(conn, search_results[0]["item_id"])
 
-        top_profits = get_top_profit_rows(conn) if tab == "ranking" else []
+        total_profit_rows = get_profit_count(conn) if tab == "ranking" else 0
+        top_profits = get_top_profit_rows(conn, limit=per_page, offset=offset) if tab == "ranking" else []
+
+    total_pages = max(1, (total_profit_rows + per_page - 1) // per_page) if tab == "ranking" else 1
 
     return {
         "world": WORLD,
+        "display_world": DISPLAY_WORLD,
+        "lowest_world": LOWEST_WORLD,
         "db_path": DB_PATH,
         "counts": counts,
         "prices": prices,
@@ -420,8 +523,11 @@ def load_dashboard_data():
         "search_results": search_results,
         "detail": detail,
         "top_profits": top_profits,
-        "sell_price_field": SELL_PRICE_FIELD,
-        "buy_price_field": BUY_PRICE_FIELD,
+        "ranking_page": page,
+        "ranking_per_page": per_page,
+        "ranking_total": total_profit_rows,
+        "ranking_total_pages": total_pages,
+        "refresh_state": get_refresh_state_snapshot(),
         "fmt_num": fmt_num,
         "refresh_status": refresh_status,
         "refreshed_count": refreshed_count,
@@ -430,8 +536,7 @@ def load_dashboard_data():
 
 @app.route("/")
 def index():
-    data = load_dashboard_data()
-    return render_template("index.html", **data)
+    return render_template("index.html", **load_dashboard_data())
 
 
 @app.post("/refresh-recipe-prices")
@@ -447,10 +552,34 @@ def refresh_recipe_prices():
         init_db()
         with get_conn() as conn:
             ids = get_recipe_item_ids(conn, item_id)
-        refreshed = update_prices_for_ids(ids)
+        refreshed = update_prices_for_worlds(ids, [LOWEST_WORLD, DISPLAY_WORLD])
+        rebuild_profits()
         return redirect(url_for("index", tab=tab, q=query, item_id=item_id, refresh="ok", count=refreshed))
     except Exception:
         return redirect(url_for("index", tab=tab, q=query, item_id=item_id, refresh="error"))
+
+
+@app.post("/refresh-all-prices")
+def refresh_all_prices():
+    started = start_full_refresh_job()
+    status = "started" if started else "running"
+    return redirect(url_for("index", tab=request.form.get("tab", "lookup"), refresh=status))
+
+
+@app.post("/refresh-profits")
+def refresh_profits():
+    page_raw = request.form.get("page", "1").strip()
+    page = int(page_raw) if page_raw.isdigit() and int(page_raw) > 0 else 1
+    try:
+        updated = rebuild_profits()
+        return redirect(url_for("index", tab="ranking", page=page, refresh="ok", count=updated))
+    except Exception:
+        return redirect(url_for("index", tab="ranking", page=page, refresh="error"))
+
+
+@app.get("/refresh-status")
+def refresh_status():
+    return jsonify(get_refresh_state_snapshot())
 
 
 @app.route("/health")
