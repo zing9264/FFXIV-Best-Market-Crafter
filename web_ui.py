@@ -2,12 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
+import math
 import threading
 import time
+import traceback
+from pathlib import Path
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
 
-from config import DB_PATH, DISPLAY_WORLD, LOWEST_WORLD
+from config import (
+    APP_DEBUG,
+    APP_HOST,
+    APP_LOG_PATH,
+    APP_PORT,
+    DB_PATH,
+    DISPLAY_WORLD,
+    FULL_REFRESH_COOLDOWN_SECONDS,
+    LOWEST_WORLD,
+    RECIPE_REFRESH_COOLDOWN_SECONDS,
+    REFRESH_STATS_PATH,
+)
 from db import get_conn, init_db
 from update_prices import update_prices_async, update_prices_for_worlds
 from update_profits import rebuild_profits
@@ -20,6 +35,7 @@ refresh_state_lock = threading.Lock()
 refresh_thread: threading.Thread | None = None
 refresh_state = {
     "running": False,
+    "cancel_requested": False,
     "phase": "idle",
     "message": "尚未開始全量更新",
     "world": "",
@@ -32,6 +48,12 @@ refresh_state = {
     "finished_at": None,
     "error": "",
 }
+cooldown_lock = threading.Lock()
+cooldown_state = {
+    "last_recipe_refresh_at": 0.0,
+    "last_full_refresh_at": 0.0,
+}
+refresh_log_lock = threading.Lock()
 
 
 def fmt_ts(ts: int | None) -> str:
@@ -49,6 +71,18 @@ def fmt_local_ts(ts: float | None) -> str:
 def fmt_num(value: float | None) -> str:
     if value is None:
         return "-"
+    return f"{math.floor(value):,}"
+
+
+def fmt_pct_floor(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{math.floor(value):,}%"
+
+
+def fmt_daily_sales(value: float | None) -> str:
+    if value is None:
+        return "-"
     return f"{value:,.2f}"
 
 
@@ -56,6 +90,33 @@ def normalize_nonzero_value(value: float | None) -> float | None:
     if value is None:
         return None
     return value if value > 0 else None
+
+
+def ensure_parent_dir(path_str: str) -> Path:
+    path = Path(path_str)
+    if path.parent != Path("."):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def append_app_log(message: str) -> None:
+    path = ensure_parent_dir(APP_LOG_PATH)
+    line = f"[{fmt_local_ts(time.time())}] {message}\n"
+    with refresh_log_lock:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+
+
+def append_refresh_stats(event: str, **payload) -> None:
+    path = ensure_parent_dir(REFRESH_STATS_PATH)
+    entry = {
+        "event": event,
+        "logged_at": dt.datetime.now(dt.UTC).isoformat(),
+        **payload,
+    }
+    with refresh_log_lock:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def update_refresh_state(**changes) -> None:
@@ -74,6 +135,23 @@ def get_refresh_state_snapshot() -> dict:
     return snapshot
 
 
+def is_cancel_requested() -> bool:
+    with refresh_state_lock:
+        return bool(refresh_state.get("cancel_requested"))
+
+
+def get_cooldown_remaining(key: str, cooldown_seconds: int) -> int:
+    with cooldown_lock:
+        last = cooldown_state.get(key, 0.0)
+    remaining = int(max(0, cooldown_seconds - (time.time() - last)))
+    return remaining
+
+
+def mark_cooldown_triggered(key: str) -> None:
+    with cooldown_lock:
+        cooldown_state[key] = time.time()
+
+
 def start_full_refresh_job() -> bool:
     global refresh_thread
     with refresh_state_lock:
@@ -82,6 +160,7 @@ def start_full_refresh_job() -> bool:
         refresh_state.update(
             {
                 "running": True,
+                "cancel_requested": False,
                 "phase": "fetching_prices",
                 "message": "準備開始全量更新",
                 "world": LOWEST_WORLD,
@@ -96,6 +175,11 @@ def start_full_refresh_job() -> bool:
             }
         )
 
+    append_app_log("開始全量更新")
+    append_refresh_stats(
+        "refresh_started",
+        worlds=[LOWEST_WORLD, DISPLAY_WORLD],
+    )
     refresh_thread = threading.Thread(target=run_full_refresh_job, daemon=True)
     refresh_thread.start()
     return True
@@ -107,6 +191,7 @@ def run_full_refresh_job() -> None:
 
     try:
         for world in worlds:
+            last_logged_batch = -1
             update_refresh_state(
                 phase="fetching_prices",
                 message=f"正在更新 {world} 價格",
@@ -115,8 +200,11 @@ def run_full_refresh_job() -> None:
                 total_batches=0,
                 completed_batches=0,
             )
+            append_app_log(f"開始更新價格範圍：{world}")
+            append_refresh_stats("world_started", world=world)
 
             def on_progress(progress: dict) -> None:
+                nonlocal last_logged_batch
                 update_refresh_state(
                     phase=progress.get("phase", "fetching_prices"),
                     message=f"正在更新 {world} 價格",
@@ -126,9 +214,53 @@ def run_full_refresh_job() -> None:
                     completed_batches=progress.get("completed_batches", 0),
                     updated_rows=total_updated + progress.get("updated_rows", 0),
                 )
+                completed_batches = int(progress.get("completed_batches", 0) or 0)
+                if completed_batches != last_logged_batch:
+                    last_logged_batch = completed_batches
+                    append_refresh_stats(
+                        "world_progress",
+                        world=world,
+                        total_ids=int(progress.get("total_ids", 0) or 0),
+                        total_batches=int(progress.get("total_batches", 0) or 0),
+                        completed_batches=completed_batches,
+                        updated_rows=total_updated + int(progress.get("updated_rows", 0) or 0),
+                        stats=progress.get("stats", {}),
+                    )
 
-            updated = int(asyncio.run(update_prices_async(world=world, progress_callback=on_progress)) or 0)
+            updated = int(
+                asyncio.run(
+                    update_prices_async(
+                        world=world,
+                        progress_callback=on_progress,
+                        should_cancel=is_cancel_requested,
+                    )
+                )
+                or 0
+            )
+            if is_cancel_requested():
+                append_app_log(f"全量更新已中斷，停止於 {world}")
+                append_refresh_stats(
+                    "refresh_cancelled",
+                    world=world,
+                    updated_rows=total_updated + updated,
+                )
+                update_refresh_state(
+                    running=False,
+                    cancel_requested=False,
+                    phase="cancelled",
+                    message="全量更新已中斷",
+                    world=world,
+                    updated_rows=total_updated + updated,
+                    finished_at=time.time(),
+                )
+                return
             total_updated += updated
+            append_app_log(f"{world} 價格更新完成，累計 {total_updated} 筆")
+            append_refresh_stats(
+                "world_finished",
+                world=world,
+                updated_rows=total_updated,
+            )
             update_refresh_state(
                 message=f"{world} 價格更新完成",
                 world=world,
@@ -143,8 +275,15 @@ def run_full_refresh_job() -> None:
             completed_batches=0,
         )
         profits_updated = rebuild_profits()
+        append_app_log(f"全量更新完成，價格 {total_updated} 筆，價差 {profits_updated} 筆")
+        append_refresh_stats(
+            "refresh_finished",
+            updated_rows=total_updated,
+            profits_updated=profits_updated,
+        )
         update_refresh_state(
             running=False,
+            cancel_requested=False,
             phase="done",
             message="全量更新完成",
             world=DISPLAY_WORLD,
@@ -153,8 +292,15 @@ def run_full_refresh_job() -> None:
             finished_at=time.time(),
         )
     except Exception as exc:
+        append_app_log(f"全量更新失敗：{exc}")
+        append_refresh_stats(
+            "refresh_failed",
+            error=str(exc),
+            traceback=traceback.format_exc(),
+        )
         update_refresh_state(
             running=False,
+            cancel_requested=False,
             phase="error",
             message="全量更新失敗",
             error=str(exc),
@@ -427,16 +573,70 @@ def get_recipe_item_ids(conn, item_id: int) -> list[int]:
     return sorted(set(int(value) for value in ids if int(value) > 0))
 
 
-def get_profit_count(conn) -> int:
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM profits WHERE world=?;", (DISPLAY_WORLD,))
-    return int(cur.fetchone()[0] or 0)
+def parse_nonnegative_float(value: str, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
 
 
-def get_top_profit_rows(conn, limit: int = 100, offset: int = 0):
+def get_profit_count(
+    conn,
+    min_daily_sales: float = 0.0,
+    min_price_gap: float = 0.0,
+    min_past_profit: float = 0.0,
+    min_margin_pct: float = 0.0,
+    min_past_margin_pct: float = 0.0,
+    min_listing_price: float = 0.0,
+) -> int:
     cur = conn.cursor()
     cur.execute(
         """
+        SELECT COUNT(*)
+        FROM profits
+        WHERE world=?
+          AND daily_sales >= ?
+          AND profit_by_listing >= ?
+          AND profit_by_sale >= ?
+          AND profit_margin_pct >= ?
+          AND sale_margin_pct >= ?
+          AND listing_price >= ?;
+        """,
+        (
+            DISPLAY_WORLD,
+            min_daily_sales,
+            min_price_gap,
+            min_past_profit,
+            min_margin_pct,
+            min_past_margin_pct,
+            min_listing_price,
+        ),
+    )
+    return int(cur.fetchone()[0] or 0)
+
+
+def get_top_profit_rows(
+    conn,
+    limit: int = 100,
+    offset: int = 0,
+    sort_by: str = "profit",
+    min_daily_sales: float = 0.0,
+    min_price_gap: float = 0.0,
+    min_past_profit: float = 0.0,
+    min_margin_pct: float = 0.0,
+    min_past_margin_pct: float = 0.0,
+    min_listing_price: float = 0.0,
+):
+    order_column = {
+        "profit": "p.profit_by_listing",
+        "margin": "p.profit_margin_pct",
+        "past_profit": "p.profit_by_sale",
+        "past_margin": "p.sale_margin_pct",
+    }.get(sort_by, "p.profit_by_listing")
+    cur = conn.cursor()
+    cur.execute(
+        f"""
         SELECT
             p.item_id,
             i.name,
@@ -445,15 +645,34 @@ def get_top_profit_rows(conn, limit: int = 100, offset: int = 0):
             p.world_name,
             p.daily_sales,
             p.unit_material_cost,
-            p.profit_by_listing
+            p.profit_by_listing,
+            p.profit_margin_pct,
+            p.profit_by_sale,
+            p.sale_margin_pct
         FROM profits p
         JOIN items i ON i.item_id = p.item_id
         LEFT JOIN recipes r ON r.output_item_id = p.item_id
         WHERE p.world = ?
-        ORDER BY p.profit_by_listing DESC, p.item_id ASC
+          AND p.daily_sales >= ?
+          AND p.profit_by_listing >= ?
+          AND p.profit_by_sale >= ?
+          AND p.profit_margin_pct >= ?
+          AND p.sale_margin_pct >= ?
+          AND p.listing_price >= ?
+        ORDER BY {order_column} DESC, p.profit_by_listing DESC, p.profit_by_sale DESC, p.item_id ASC
         LIMIT ? OFFSET ?;
         """,
-        (DISPLAY_WORLD, limit, offset),
+        (
+            DISPLAY_WORLD,
+            min_daily_sales,
+            min_price_gap,
+            min_past_profit,
+            min_margin_pct,
+            min_past_margin_pct,
+            min_listing_price,
+            limit,
+            offset,
+        ),
     )
     rows = []
     for row in cur.fetchall():
@@ -467,6 +686,9 @@ def get_top_profit_rows(conn, limit: int = 100, offset: int = 0):
                 "daily_sales": normalize_nonzero_value(row[5]),
                 "unit_material_cost": row[6],
                 "price_gap": row[7],
+                "profit_margin_pct": row[8],
+                "past_profit": row[9],
+                "past_margin_pct": row[10],
             }
         )
     return rows
@@ -478,6 +700,16 @@ def load_dashboard_data():
     selected_id = request.args.get("item_id", "").strip()
     refresh_status = request.args.get("refresh", "").strip()
     refreshed_count = request.args.get("count", "").strip()
+    cooldown_remaining = request.args.get("cooldown_remaining", "").strip()
+    ranking_sort = request.args.get("sort", "profit").strip()
+    if ranking_sort not in {"profit", "margin", "past_profit", "past_margin"}:
+        ranking_sort = "profit"
+    min_daily_sales = parse_nonnegative_float(request.args.get("min_daily_sales", "0"), default=0.0)
+    min_price_gap = parse_nonnegative_float(request.args.get("min_price_gap", "0"), default=0.0)
+    min_past_profit = parse_nonnegative_float(request.args.get("min_past_profit", "0"), default=0.0)
+    min_margin_pct = parse_nonnegative_float(request.args.get("min_margin_pct", "0"), default=0.0)
+    min_past_margin_pct = parse_nonnegative_float(request.args.get("min_past_margin_pct", "0"), default=0.0)
+    min_listing_price = parse_nonnegative_float(request.args.get("min_listing_price", "0"), default=0.0)
     page_raw = request.args.get("page", "1").strip()
     page = int(page_raw) if page_raw.isdigit() and int(page_raw) > 0 else 1
     per_page = 100
@@ -495,8 +727,35 @@ def load_dashboard_data():
         elif len(search_results) == 1:
             detail = load_recipe_detail(conn, search_results[0]["item_id"])
 
-        total_profit_rows = get_profit_count(conn) if tab == "ranking" else 0
-        top_profits = get_top_profit_rows(conn, limit=per_page, offset=offset) if tab == "ranking" else []
+        total_profit_rows = (
+            get_profit_count(
+                conn,
+                min_daily_sales=min_daily_sales,
+                min_price_gap=min_price_gap,
+                min_past_profit=min_past_profit,
+                min_margin_pct=min_margin_pct,
+                min_past_margin_pct=min_past_margin_pct,
+                min_listing_price=min_listing_price,
+            )
+            if tab == "ranking"
+            else 0
+        )
+        top_profits = (
+            get_top_profit_rows(
+                conn,
+                limit=per_page,
+                offset=offset,
+                sort_by=ranking_sort,
+                min_daily_sales=min_daily_sales,
+                min_price_gap=min_price_gap,
+                min_past_profit=min_past_profit,
+                min_margin_pct=min_margin_pct,
+                min_past_margin_pct=min_past_margin_pct,
+                min_listing_price=min_listing_price,
+            )
+            if tab == "ranking"
+            else []
+        )
 
     total_pages = max(1, (total_profit_rows + per_page - 1) // per_page) if tab == "ranking" else 1
 
@@ -516,10 +775,20 @@ def load_dashboard_data():
         "ranking_per_page": per_page,
         "ranking_total": total_profit_rows,
         "ranking_total_pages": total_pages,
+        "ranking_sort": ranking_sort,
+        "min_daily_sales": min_daily_sales,
+        "min_price_gap": min_price_gap,
+        "min_past_profit": min_past_profit,
+        "min_margin_pct": min_margin_pct,
+        "min_past_margin_pct": min_past_margin_pct,
+        "min_listing_price": min_listing_price,
         "refresh_state": get_refresh_state_snapshot(),
         "fmt_num": fmt_num,
+        "fmt_pct_floor": fmt_pct_floor,
+        "fmt_daily_sales": fmt_daily_sales,
         "refresh_status": refresh_status,
         "refreshed_count": refreshed_count,
+        "cooldown_remaining": cooldown_remaining,
     }
 
 
@@ -535,11 +804,24 @@ def refresh_recipe_prices():
     tab = request.form.get("tab", "lookup").strip() or "lookup"
     if not item_id_raw.isdigit():
         return redirect(url_for("index", tab=tab, q=query, refresh="invalid"))
+    remaining = get_cooldown_remaining("last_recipe_refresh_at", RECIPE_REFRESH_COOLDOWN_SECONDS)
+    if remaining > 0:
+        return redirect(
+            url_for(
+                "index",
+                tab=tab,
+                q=query,
+                item_id=item_id_raw,
+                refresh="cooldown_recipe",
+                cooldown_remaining=remaining,
+            )
+        )
 
     item_id = int(item_id_raw)
     try:
         with get_conn() as conn:
             ids = get_recipe_item_ids(conn, item_id)
+        mark_cooldown_triggered("last_recipe_refresh_at")
         refreshed = update_prices_for_worlds(ids, [LOWEST_WORLD, DISPLAY_WORLD])
         rebuild_profits()
         return redirect(url_for("index", tab=tab, q=query, item_id=item_id, refresh="ok", count=refreshed))
@@ -549,25 +831,104 @@ def refresh_recipe_prices():
 
 @app.post("/refresh-all-prices")
 def refresh_all_prices():
+    remaining = get_cooldown_remaining("last_full_refresh_at", FULL_REFRESH_COOLDOWN_SECONDS)
+    if remaining > 0:
+        return redirect(
+            url_for(
+                "index",
+                tab=request.form.get("tab", "lookup"),
+                refresh="cooldown_full",
+                cooldown_remaining=remaining,
+            )
+        )
     started = start_full_refresh_job()
+    if started:
+        mark_cooldown_triggered("last_full_refresh_at")
     status = "started" if started else "running"
     return redirect(url_for("index", tab=request.form.get("tab", "lookup"), refresh=status))
+
+
+@app.post("/cancel-refresh")
+def cancel_refresh():
+    tab = request.form.get("tab", "lookup").strip() or "lookup"
+    with refresh_state_lock:
+        if refresh_state["running"]:
+            refresh_state["cancel_requested"] = True
+            refresh_state["message"] = "已收到中斷請求，等待目前 batch 結束"
+            append_app_log("收到中斷全量更新請求")
+            append_refresh_stats("cancel_requested", world=refresh_state.get("world", ""))
+            return redirect(url_for("index", tab=tab, refresh="cancel_requested"))
+    return redirect(url_for("index", tab=tab, refresh="not_running"))
 
 
 @app.post("/refresh-profits")
 def refresh_profits():
     page_raw = request.form.get("page", "1").strip()
     page = int(page_raw) if page_raw.isdigit() and int(page_raw) > 0 else 1
+    ranking_sort = request.form.get("sort", "profit").strip()
+    if ranking_sort not in {"profit", "margin", "past_profit", "past_margin"}:
+        ranking_sort = "profit"
+    min_daily_sales = parse_nonnegative_float(request.form.get("min_daily_sales", "0"), default=0.0)
+    min_price_gap = parse_nonnegative_float(request.form.get("min_price_gap", "0"), default=0.0)
+    min_past_profit = parse_nonnegative_float(request.form.get("min_past_profit", "0"), default=0.0)
+    min_margin_pct = parse_nonnegative_float(request.form.get("min_margin_pct", "0"), default=0.0)
+    min_past_margin_pct = parse_nonnegative_float(request.form.get("min_past_margin_pct", "0"), default=0.0)
+    min_listing_price = parse_nonnegative_float(request.form.get("min_listing_price", "0"), default=0.0)
     try:
         updated = rebuild_profits()
-        return redirect(url_for("index", tab="ranking", page=page, refresh="ok", count=updated))
+        return redirect(
+            url_for(
+                "index",
+                tab="ranking",
+                page=page,
+                sort=ranking_sort,
+                min_daily_sales=min_daily_sales,
+                min_price_gap=min_price_gap,
+                min_past_profit=min_past_profit,
+                min_margin_pct=min_margin_pct,
+                min_past_margin_pct=min_past_margin_pct,
+                min_listing_price=min_listing_price,
+                refresh="ok",
+                count=updated,
+            )
+        )
     except Exception:
-        return redirect(url_for("index", tab="ranking", page=page, refresh="error"))
+        return redirect(
+            url_for(
+                "index",
+                tab="ranking",
+                page=page,
+                sort=ranking_sort,
+                min_daily_sales=min_daily_sales,
+                min_price_gap=min_price_gap,
+                min_past_profit=min_past_profit,
+                min_margin_pct=min_margin_pct,
+                min_past_margin_pct=min_past_margin_pct,
+                min_listing_price=min_listing_price,
+                refresh="error",
+            )
+        )
 
 
 @app.get("/refresh-status")
 def refresh_status():
     return jsonify(get_refresh_state_snapshot())
+
+
+@app.get("/logs/app")
+def download_app_log():
+    path = Path(APP_LOG_PATH)
+    if not path.exists():
+        abort(404)
+    return send_file(path, as_attachment=True, download_name=path.name, mimetype="text/plain")
+
+
+@app.get("/logs/refresh-stats")
+def download_refresh_stats():
+    path = Path(REFRESH_STATS_PATH)
+    if not path.exists():
+        abort(404)
+    return send_file(path, as_attachment=True, download_name=path.name, mimetype="application/jsonl")
 
 
 @app.route("/health")
@@ -576,4 +937,4 @@ def health():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    app.run(host=APP_HOST, port=APP_PORT, debug=APP_DEBUG)

@@ -4,6 +4,7 @@ import importlib
 import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -54,6 +55,8 @@ def seed_db(db_path: str) -> None:
             unit_material_cost REAL DEFAULT 0,
             profit_by_listing REAL DEFAULT 0,
             profit_by_sale REAL DEFAULT 0,
+            profit_margin_pct REAL DEFAULT 0,
+            sale_margin_pct REAL DEFAULT 0,
             daily_sales REAL DEFAULT 0,
             updated INTEGER DEFAULT 0,
             PRIMARY KEY (item_id, world)
@@ -109,6 +112,18 @@ def seed_db(db_path: str) -> None:
         ) VALUES(200, '鳳凰', 0, '鳳凰', 0, 55, 0, 0, 0, 1234567890);
         """
     )
+    cur.executemany(
+        """
+        INSERT INTO profits(
+            item_id, world, world_name, listing_price, sale_price, material_total, unit_material_cost,
+            profit_by_listing, profit_by_sale, profit_margin_pct, sale_margin_pct, daily_sales, updated
+        ) VALUES(?, '鳳凰', '鳳凰', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1234567890);
+        """,
+        [
+            (100, 2500, 2200, 2000, 2000, 500, 200, 25, 10, 1.2),
+            (999, 400, 350, 200, 200, 200, 150, 100, 75, 0.4),
+        ],
+    )
     conn.commit()
     conn.close()
 
@@ -118,12 +133,18 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp_dir = tempfile.TemporaryDirectory()
         cls.db_path = os.path.join(cls.temp_dir.name, "test.sqlite")
+        cls.app_log_path = os.path.join(cls.temp_dir.name, "app.log")
+        cls.refresh_stats_path = os.path.join(cls.temp_dir.name, "refresh_stats.jsonl")
         seed_db(cls.db_path)
 
         os.environ["FF14_DB_PATH"] = cls.db_path
         os.environ["FF14_WORLD"] = "繁中服"
         os.environ["FF14_LOWEST_WORLD"] = "繁中服"
         os.environ["FF14_DISPLAY_WORLD"] = "鳳凰"
+        os.environ["FF14_RECIPE_REFRESH_COOLDOWN_SECONDS"] = "30"
+        os.environ["FF14_FULL_REFRESH_COOLDOWN_SECONDS"] = "600"
+        os.environ["FF14_APP_LOG_PATH"] = cls.app_log_path
+        os.environ["FF14_REFRESH_STATS_PATH"] = cls.refresh_stats_path
 
         import config
         import db
@@ -144,6 +165,34 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
         os.environ.pop("FF14_WORLD", None)
         os.environ.pop("FF14_LOWEST_WORLD", None)
         os.environ.pop("FF14_DISPLAY_WORLD", None)
+        os.environ.pop("FF14_RECIPE_REFRESH_COOLDOWN_SECONDS", None)
+        os.environ.pop("FF14_FULL_REFRESH_COOLDOWN_SECONDS", None)
+        os.environ.pop("FF14_APP_LOG_PATH", None)
+        os.environ.pop("FF14_REFRESH_STATS_PATH", None)
+
+    def setUp(self):
+        self.web_ui.cooldown_state["last_recipe_refresh_at"] = 0.0
+        self.web_ui.cooldown_state["last_full_refresh_at"] = 0.0
+        self.web_ui.refresh_state.update(
+            {
+                "running": False,
+                "cancel_requested": False,
+                "phase": "idle",
+                "message": "尚未開始全量更新",
+                "world": "",
+                "total_ids": 0,
+                "total_batches": 0,
+                "completed_batches": 0,
+                "updated_rows": 0,
+                "profits_updated": 0,
+                "started_at": None,
+                "finished_at": None,
+                "error": "",
+            }
+        )
+        for path in (self.app_log_path, self.refresh_stats_path):
+            if os.path.exists(path):
+                os.remove(path)
 
     def test_get_recipe_item_ids_returns_product_and_ingredients(self):
         with self.db.get_conn() as conn:
@@ -174,6 +223,17 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
         self.assertIn("count=6", response.headers["Location"])
         mock_update.assert_called_once_with([100, 200, 300], ["繁中服", "鳳凰"])
 
+    def test_refresh_route_respects_recipe_cooldown(self):
+        client = self.app.test_client()
+        self.web_ui.cooldown_state["last_recipe_refresh_at"] = time.time()
+        response = client.post(
+            "/refresh-recipe-prices",
+            data={"item_id": "100", "q": "測試成品", "tab": "lookup"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("refresh=cooldown_recipe", response.headers["Location"])
+
     def test_normalize_nonzero_value_ignores_zero_defaults(self):
         self.assertEqual(self.web_ui.normalize_nonzero_value(500), 500)
         self.assertIsNone(self.web_ui.normalize_nonzero_value(0))
@@ -195,21 +255,102 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
         response = client.get("/?tab=ranking")
         self.assertEqual(response.status_code, 200)
 
+    def test_ranking_page_supports_margin_sort_and_sales_filter(self):
+        client = self.app.test_client()
+        response = client.get("/?tab=ranking&sort=margin&min_daily_sales=0.5")
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("當前獲利%", body)
+        self.assertIn("測試成品", body)
+        self.assertNotIn("其他項目", body)
+
+    def test_ranking_page_supports_past_profit_sort(self):
+        client = self.app.test_client()
+        response = client.get("/?tab=ranking&sort=past_profit&min_past_profit=100")
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("過去獲利", body)
+        self.assertIn("測試成品", body)
+
     def test_refresh_profits_redirects_with_count(self):
         client = self.app.test_client()
         with patch.object(self.web_ui, "rebuild_profits", return_value=12) as mock_rebuild:
             response = client.post(
                 "/refresh-profits",
-                data={"page": "2"},
+                data={"page": "2", "sort": "margin", "min_daily_sales": "0.5"},
                 follow_redirects=False,
             )
 
         self.assertEqual(response.status_code, 302)
         self.assertIn("tab=ranking", response.headers["Location"])
         self.assertIn("page=2", response.headers["Location"])
+        self.assertIn("sort=margin", response.headers["Location"])
+        self.assertIn("min_daily_sales=0.5", response.headers["Location"])
         self.assertIn("refresh=ok", response.headers["Location"])
         self.assertIn("count=12", response.headers["Location"])
         mock_rebuild.assert_called_once_with()
+
+    def test_refresh_all_prices_respects_full_cooldown(self):
+        client = self.app.test_client()
+        self.web_ui.cooldown_state["last_full_refresh_at"] = time.time()
+        response = client.post(
+            "/refresh-all-prices",
+            data={"tab": "lookup"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("refresh=cooldown_full", response.headers["Location"])
+
+    def test_cancel_refresh_sets_cancel_requested_when_running(self):
+        client = self.app.test_client()
+        self.web_ui.refresh_state["running"] = True
+
+        response = client.post(
+            "/cancel-refresh",
+            data={"tab": "lookup"},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("refresh=cancel_requested", response.headers["Location"])
+        self.assertTrue(self.web_ui.refresh_state["cancel_requested"])
+
+    def test_cancel_refresh_rejects_when_not_running(self):
+        client = self.app.test_client()
+        response = client.post(
+            "/cancel-refresh",
+            data={"tab": "lookup"},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("refresh=not_running", response.headers["Location"])
+
+    def test_download_app_log_returns_file(self):
+        client = self.app.test_client()
+        self.web_ui.append_app_log("測試 app log")
+
+        response = client.get("/logs/app")
+        try:
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("attachment", response.headers.get("Content-Disposition", ""))
+            self.assertIn("測試 app log", response.get_data(as_text=True))
+        finally:
+            response.close()
+
+    def test_download_refresh_stats_returns_file(self):
+        client = self.app.test_client()
+        self.web_ui.append_refresh_stats("world_progress", world="繁中服", stats={"http_504": 2})
+
+        response = client.get("/logs/refresh-stats")
+        try:
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("attachment", response.headers.get("Content-Disposition", ""))
+            self.assertIn("\"event\": \"world_progress\"", response.get_data(as_text=True))
+        finally:
+            response.close()
 
 
 if __name__ == "__main__":

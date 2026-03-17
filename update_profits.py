@@ -25,6 +25,8 @@ def rebuild_profits() -> int:
                 unit_material_cost,
                 profit_by_listing,
                 profit_by_sale,
+                profit_margin_pct,
+                sale_margin_pct,
                 daily_sales,
                 updated
             )
@@ -41,6 +43,16 @@ def rebuild_profits() -> int:
                     WHEN dp.sale_price > 0 THEN dp.sale_price - (SUM(ri.qty * fp.min_price) / r.yield)
                     ELSE 0
                 END AS profit_by_sale,
+                CASE
+                    WHEN (SUM(ri.qty * fp.min_price) / r.yield) > 0
+                    THEN ((dp.min_price - (SUM(ri.qty * fp.min_price) / r.yield)) / (SUM(ri.qty * fp.min_price) / r.yield)) * 100.0
+                    ELSE 0
+                END AS profit_margin_pct,
+                CASE
+                    WHEN dp.sale_price > 0 AND (SUM(ri.qty * fp.min_price) / r.yield) > 0
+                    THEN ((dp.sale_price - (SUM(ri.qty * fp.min_price) / r.yield)) / (SUM(ri.qty * fp.min_price) / r.yield)) * 100.0
+                    ELSE 0
+                END AS sale_margin_pct,
                 dp.daily_sales,
                 ?
             FROM recipes r

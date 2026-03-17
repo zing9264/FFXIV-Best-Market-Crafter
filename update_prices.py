@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from typing import Callable, Iterable, List, Optional
 
 import aiohttp
@@ -163,6 +164,7 @@ async def fetch_batch_rows(
     ids: List[int],
     world: str,
     retry_limit: int = 3,
+    stats: Optional[Counter] = None,
 ):
     try:
         payload = await fetch_prices(session, limiter, ids, world)
@@ -173,15 +175,39 @@ async def fetch_batch_rows(
                 rows.append(row)
         return rows
     except aiohttp.ClientResponseError as exc:
+        if stats is not None:
+            stats[f"http_{exc.status}"] += 1
         if exc.status in {429, 500, 502, 503, 504}:
             if retry_limit > 0:
+                if stats is not None:
+                    stats["retries"] += 1
                 await asyncio.sleep((4 - retry_limit) * 1.5 + 1)
-                return await fetch_batch_rows(session, limiter, ids, world, retry_limit - 1)
+                return await fetch_batch_rows(session, limiter, ids, world, retry_limit - 1, stats=stats)
             if len(ids) > 1:
+                if stats is not None:
+                    stats["splits"] += 1
                 midpoint = len(ids) // 2
-                left = await fetch_batch_rows(session, limiter, ids[:midpoint], world, 2)
-                right = await fetch_batch_rows(session, limiter, ids[midpoint:], world, 2)
+                left = await fetch_batch_rows(session, limiter, ids[:midpoint], world, 2, stats=stats)
+                right = await fetch_batch_rows(session, limiter, ids[midpoint:], world, 2, stats=stats)
                 return left + right
+        raise
+    except asyncio.TimeoutError:
+        if stats is not None:
+            stats["timeout"] += 1
+        if retry_limit > 0:
+            if stats is not None:
+                stats["retries"] += 1
+            await asyncio.sleep((4 - retry_limit) * 1.5 + 1)
+            return await fetch_batch_rows(session, limiter, ids, world, retry_limit - 1, stats=stats)
+        raise
+    except aiohttp.ClientError:
+        if stats is not None:
+            stats["client_error"] += 1
+        if retry_limit > 0:
+            if stats is not None:
+                stats["retries"] += 1
+            await asyncio.sleep((4 - retry_limit) * 1.5 + 1)
+            return await fetch_batch_rows(session, limiter, ids, world, retry_limit - 1, stats=stats)
         raise
 
 
@@ -189,6 +215,7 @@ async def update_prices_async(
     ids: Optional[List[int]] = None,
     world: str = WORLD,
     progress_callback: Optional[Callable[[dict], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ):
     if not ids:
         init_db()
@@ -205,6 +232,7 @@ async def update_prices_async(
     db_lock = asyncio.Lock()
     updated_rows = 0
     completed_batches = 0
+    stats: Counter = Counter()
 
     if progress_callback:
         progress_callback(
@@ -215,6 +243,7 @@ async def update_prices_async(
                 "total_batches": len(batches),
                 "completed_batches": 0,
                 "updated_rows": 0,
+                "stats": dict(stats),
             }
         )
 
@@ -235,8 +264,12 @@ async def update_prices_async(
     async with aiohttp.ClientSession() as session:
         async def worker(batch):
             nonlocal updated_rows, completed_batches
+            if should_cancel and should_cancel():
+                return
             async with sem:
-                rows = await fetch_batch_rows(session, limiter, batch, world)
+                if should_cancel and should_cancel():
+                    return
+                rows = await fetch_batch_rows(session, limiter, batch, world, stats=stats)
                 async with db_lock:
                     persist_rows(rows)
                     updated_rows += len(rows)
@@ -251,6 +284,7 @@ async def update_prices_async(
                                 "completed_batches": completed_batches,
                                 "updated_rows": updated_rows,
                                 "last_batch_size": len(batch),
+                                "stats": dict(stats),
                             }
                         )
 
@@ -258,6 +292,18 @@ async def update_prices_async(
         await asyncio.gather(*tasks)
 
     print(f"Updated prices: {updated_rows} items for world {world}")
+    if progress_callback:
+        progress_callback(
+            {
+                "phase": "fetching_prices",
+                "world": world,
+                "total_ids": len(ids),
+                "total_batches": len(batches),
+                "completed_batches": completed_batches,
+                "updated_rows": updated_rows,
+                "stats": dict(stats),
+            }
+        )
     return updated_rows
 
 

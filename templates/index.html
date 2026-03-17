@@ -395,6 +395,14 @@
             <input type="hidden" name="tab" value="{{ tab }}" />
             <button class="btn primary" type="submit" {% if refresh_state.running %}disabled{% endif %}>開始更新所有價格</button>
           </form>
+          {% if refresh_state.running %}
+            <form method="post" action="/cancel-refresh">
+              <input type="hidden" name="tab" value="{{ tab }}" />
+              <button class="btn ghost" type="submit">中斷更新</button>
+            </form>
+          {% endif %}
+          <a class="btn ghost" href="/logs/app">下載 App Log</a>
+          <a class="btn ghost" href="/logs/refresh-stats">下載更新 Stats</a>
         </div>
         <div class="grid" style="margin-bottom: 0;">
           <div class="card">
@@ -460,6 +468,18 @@
           <main class="panel">
             {% if refresh_status == "ok" %}
               <div class="notice ok">已更新這張製作表的價格資料，共刷新 {{ refreshed_count or "0" }} 筆 item price。</div>
+            {% elif refresh_status == "started" %}
+              <div class="notice ok">已開始全量更新，請看上方進度面板。</div>
+            {% elif refresh_status == "running" %}
+              <div class="notice error">全量更新已在進行中，請稍候。</div>
+            {% elif refresh_status == "cancel_requested" %}
+              <div class="notice ok">已送出中斷請求，系統會在目前 batch 結束後停止。</div>
+            {% elif refresh_status == "not_running" %}
+              <div class="notice error">目前沒有正在進行中的全量更新。</div>
+            {% elif refresh_status == "cooldown_recipe" %}
+              <div class="notice error">單張製作表更新冷卻中，請 {{ cooldown_remaining or "0" }} 秒後再試。</div>
+            {% elif refresh_status == "cooldown_full" %}
+              <div class="notice error">全量更新冷卻中，請 {{ cooldown_remaining or "0" }} 秒後再試。</div>
             {% elif refresh_status == "error" %}
               <div class="notice error">更新價格時發生錯誤，請稍後再試一次。</div>
             {% elif refresh_status == "invalid" %}
@@ -505,7 +525,7 @@
               <div class="summary">
                 <div class="card">
                   <div class="label">成品日成交數</div>
-                  <div class="value">{{ fmt_num(detail.product.daily_sales) }}</div>
+                  <div class="value">{{ fmt_daily_sales(detail.product.daily_sales) }}</div>
                   <div class="subvalue">來自價格資料的 sale velocity</div>
                 </div>
                 <div class="card">
@@ -560,14 +580,14 @@
                   <tbody>
                     {% for ing in detail.ingredients %}
                       <tr>
-                        <td>{{ ing.name }}</td>
+                        <td><a href="/?tab=lookup&item_id={{ ing.item_id }}&q={{ ing.name | urlencode }}" style="color: inherit;">{{ ing.name }}</a></td>
                         <td class="muted">{{ ing.item_id }}</td>
                         <td>{{ ing.qty }}</td>
                         <td class="money">{{ fmt_num(ing.display_price) }}</td>
                         <td class="money">{{ fmt_num(ing.lowest_price) }}</td>
                         <td>{{ ing.lowest_world_name }}</td>
                         <td class="money">{{ fmt_num(ing.line_total) }}</td>
-                        <td>{{ fmt_num(ing.daily_sales) }}</td>
+                        <td>{{ fmt_daily_sales(ing.daily_sales) }}</td>
                         <td>{{ ing.listings if ing.listings is not none else "-" }}</td>
                       </tr>
                     {% else %}
@@ -602,10 +622,57 @@
       {% else %}
         <section class="panel">
           <h2>價差排行</h2>
-          <p class="hint">排序依據為 `成品價格 - 單件素材成本`。目前顯示第 {{ ((ranking_page - 1) * ranking_per_page) + 1 }} 到 {{ ((ranking_page - 1) * ranking_per_page) + (top_profits|length) }} 筆，共 {{ ranking_total }} 筆。</p>
+          <p class="hint">可依 `當前價差 / 當前獲利% / 過去獲利 / 過去獲利%` 排序，並用最低日成交數先過濾。百分比公式皆是 `獲利 / 單件素材成本 * 100`。目前顯示第 {{ ((ranking_page - 1) * ranking_per_page) + 1 }} 到 {{ ((ranking_page - 1) * ranking_per_page) + (top_profits|length) }} 筆，共 {{ ranking_total }} 筆。</p>
+
+          <form method="get" action="/" class="search-form" style="margin: 0 0 16px;">
+            <input type="hidden" name="tab" value="ranking" />
+            <div class="actions">
+              <label class="hint" style="display: grid; gap: 6px;">
+                排序方式
+                <select name="sort" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);">
+                  <option value="profit" {% if ranking_sort == "profit" %}selected{% endif %}>當前價差</option>
+                  <option value="margin" {% if ranking_sort == "margin" %}selected{% endif %}>當前獲利%</option>
+                  <option value="past_profit" {% if ranking_sort == "past_profit" %}selected{% endif %}>過去獲利</option>
+                  <option value="past_margin" {% if ranking_sort == "past_margin" %}selected{% endif %}>過去獲利%</option>
+                </select>
+              </label>
+              <label class="hint" style="display: grid; gap: 6px;">
+                最低日成交數
+                <input type="number" min="0" step="0.1" name="min_daily_sales" value="{{ min_daily_sales }}" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);" />
+              </label>
+              <label class="hint" style="display: grid; gap: 6px;">
+                最低價差
+                <input type="number" min="0" step="1" name="min_price_gap" value="{{ min_price_gap }}" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);" />
+              </label>
+              <label class="hint" style="display: grid; gap: 6px;">
+                最低過去獲利
+                <input type="number" min="0" step="1" name="min_past_profit" value="{{ min_past_profit }}" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);" />
+              </label>
+              <label class="hint" style="display: grid; gap: 6px;">
+                最低當前獲利%
+                <input type="number" min="0" step="0.1" name="min_margin_pct" value="{{ min_margin_pct }}" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);" />
+              </label>
+              <label class="hint" style="display: grid; gap: 6px;">
+                最低過去獲利%
+                <input type="number" min="0" step="0.1" name="min_past_margin_pct" value="{{ min_past_margin_pct }}" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);" />
+              </label>
+              <label class="hint" style="display: grid; gap: 6px;">
+                最低成品價格
+                <input type="number" min="0" step="1" name="min_listing_price" value="{{ min_listing_price }}" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);" />
+              </label>
+              <button class="btn ghost" type="submit">套用排行條件</button>
+            </div>
+          </form>
 
           <form method="post" action="/refresh-profits" style="margin: 0 0 16px;">
             <input type="hidden" name="page" value="{{ ranking_page }}" />
+            <input type="hidden" name="sort" value="{{ ranking_sort }}" />
+            <input type="hidden" name="min_daily_sales" value="{{ min_daily_sales }}" />
+            <input type="hidden" name="min_price_gap" value="{{ min_price_gap }}" />
+            <input type="hidden" name="min_past_profit" value="{{ min_past_profit }}" />
+            <input type="hidden" name="min_margin_pct" value="{{ min_margin_pct }}" />
+            <input type="hidden" name="min_past_margin_pct" value="{{ min_past_margin_pct }}" />
+            <input type="hidden" name="min_listing_price" value="{{ min_listing_price }}" />
             <button class="btn primary" type="submit">重算總價差</button>
           </form>
 
@@ -619,7 +686,10 @@
                   <th>Yield</th>
                   <th>成品價格</th>
                   <th>單件素材成本</th>
-                  <th>價差</th>
+                  <th>當前價差</th>
+                  <th>當前獲利%</th>
+                  <th>過去獲利</th>
+                  <th>過去獲利%</th>
                   <th>日成交數</th>
                 </tr>
               </thead>
@@ -633,11 +703,14 @@
                     <td class="money">{{ fmt_num(row.sell_price) }}</td>
                     <td class="money">{{ fmt_num(row.unit_material_cost) }}</td>
                     <td class="money positive">{{ fmt_num(row.price_gap) }}</td>
-                    <td>{{ fmt_num(row.daily_sales) }}</td>
+                    <td class="money">{{ fmt_pct_floor(row.profit_margin_pct) }}</td>
+                    <td class="money {% if row.past_profit is not none and row.past_profit >= 0 %}positive{% elif row.past_profit is not none %}negative{% endif %}">{{ fmt_num(row.past_profit) }}</td>
+                    <td class="money">{{ fmt_pct_floor(row.past_margin_pct) }}</td>
+                    <td>{{ fmt_daily_sales(row.daily_sales) }}</td>
                   </tr>
                 {% else %}
                   <tr>
-                    <td colspan="8" class="muted">目前沒有可排行資料。先跑 `update_prices.py` 後再回來看。</td>
+                    <td colspan="11" class="muted">目前沒有符合條件的排行資料。先重算價差或放寬過濾條件再試。</td>
                   </tr>
                 {% endfor %}
               </tbody>
@@ -646,10 +719,10 @@
 
           <div class="actions" style="margin-top: 16px;">
             {% if ranking_page > 1 %}
-              <a class="btn ghost" href="/?tab=ranking&page={{ ranking_page - 1 }}">上一頁</a>
+              <a class="btn ghost" href="/?tab=ranking&page={{ ranking_page - 1 }}&sort={{ ranking_sort }}&min_daily_sales={{ min_daily_sales }}&min_price_gap={{ min_price_gap }}&min_past_profit={{ min_past_profit }}&min_margin_pct={{ min_margin_pct }}&min_past_margin_pct={{ min_past_margin_pct }}&min_listing_price={{ min_listing_price }}">上一頁</a>
             {% endif %}
             {% if ranking_page < ranking_total_pages %}
-              <a class="btn ghost" href="/?tab=ranking&page={{ ranking_page + 1 }}">下一頁</a>
+              <a class="btn ghost" href="/?tab=ranking&page={{ ranking_page + 1 }}&sort={{ ranking_sort }}&min_daily_sales={{ min_daily_sales }}&min_price_gap={{ min_price_gap }}&min_past_profit={{ min_past_profit }}&min_margin_pct={{ min_margin_pct }}&min_past_margin_pct={{ min_past_margin_pct }}&min_listing_price={{ min_listing_price }}">下一頁</a>
             {% endif %}
           </div>
         </section>
@@ -679,7 +752,7 @@
                   <td>{{ p.world_name }}</td>
                   <td class="money">{{ fmt_num(p.min_price) }}</td>
                   <td class="money">{{ fmt_num(p.sale_price) }}</td>
-                  <td>{{ fmt_num(p.daily_sales) }}</td>
+                  <td>{{ fmt_daily_sales(p.daily_sales) }}</td>
                   <td>{{ p.listings if p.listings is not none else "-" }}</td>
                   <td class="muted">{{ p.last_updated }}</td>
                 </tr>

@@ -136,8 +136,36 @@ python update_profits.py
 ```bash
 cd /mnt/d/FF\ tools/bestmarketcrafter
 source .venv-wsl/bin/activate
-python -c 'from web_ui import app; app.run(host="127.0.0.1", port=5000, debug=False)'
+python web_ui.py
 ```
+
+預設會讀 [`config.py`](/mnt/d/FF%20tools/bestmarketcrafter/config.py) 的：
+
+- `APP_HOST`
+- `APP_PORT`
+- `APP_DEBUG`
+
+## Hamachi 私用分享
+
+如果只打算給自己和朋友在 Hamachi 內網使用，可以把服務改成對區網開放：
+
+```bash
+cd /mnt/d/FF\ tools/bestmarketcrafter
+source .venv-wsl/bin/activate
+FF14_APP_HOST=0.0.0.0 FF14_APP_PORT=5000 python web_ui.py
+```
+
+朋友之後可用你的 Hamachi IP 存取：
+
+```text
+http://<你的Hamachi IP>:5000
+```
+
+注意：
+
+- 這適合小範圍私用，不是正式公開部署
+- 如果連不到，要先檢查 Windows 防火牆是否允許該 port
+- 如果你跑在 WSL 內，還要確認 WSL 對 Hamachi 流量可達
 
 ### 全量更新價格
 

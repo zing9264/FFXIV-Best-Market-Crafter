@@ -5,6 +5,13 @@ from pathlib import Path
 
 # Core settings
 DB_PATH = os.environ.get("FF14_DB_PATH", "db.sqlite")
+APP_HOST = os.environ.get("FF14_APP_HOST", "127.0.0.1")
+APP_PORT = int(os.environ.get("FF14_APP_PORT", "5000"))
+APP_DEBUG = os.environ.get("FF14_APP_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+RECIPE_REFRESH_COOLDOWN_SECONDS = int(os.environ.get("FF14_RECIPE_REFRESH_COOLDOWN_SECONDS", "30"))
+FULL_REFRESH_COOLDOWN_SECONDS = int(os.environ.get("FF14_FULL_REFRESH_COOLDOWN_SECONDS", "600"))
+APP_LOG_PATH = os.environ.get("FF14_APP_LOG_PATH", "app.log")
+REFRESH_STATS_PATH = os.environ.get("FF14_REFRESH_STATS_PATH", "refresh_stats.jsonl")
 
 # Data sources
 UNIVERSALIS_BASE_URL = os.environ.get("UNIVERSALIS_BASE_URL", "https://universalis.app/api/v2")
@@ -25,9 +32,9 @@ DISPLAY_WORLD = os.environ.get("FF14_DISPLAY_WORLD", "鳳凰")
 WORLD = os.environ.get("FF14_WORLD", LOWEST_WORLD)
 
 # Universalis batching / rate limiting
-MAX_BATCH_SIZE = int(os.environ.get("FF14_MAX_BATCH_SIZE", "100"))
-MAX_RPS = float(os.environ.get("FF14_MAX_RPS", "15"))  # <= 15 req/s
-MAX_CONCURRENCY = int(os.environ.get("FF14_MAX_CONCURRENCY", "8"))
+MAX_BATCH_SIZE = int(os.environ.get("FF14_MAX_BATCH_SIZE", "40"))
+MAX_RPS = float(os.environ.get("FF14_MAX_RPS", "2"))
+MAX_CONCURRENCY = int(os.environ.get("FF14_MAX_CONCURRENCY", "4"))
 
 # Optional: extra item IDs to always refresh prices for
 EXTRA_ITEM_IDS = [

@@ -9,6 +9,8 @@ from config import DB_PATH
 @contextmanager
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout = 5000;")
+    conn.execute("PRAGMA temp_store = MEMORY;")
     try:
         yield conn
         conn.commit()
@@ -79,6 +81,8 @@ def init_db():
                 unit_material_cost REAL DEFAULT 0,
                 profit_by_listing REAL DEFAULT 0,
                 profit_by_sale REAL DEFAULT 0,
+                profit_margin_pct REAL DEFAULT 0,
+                sale_margin_pct REAL DEFAULT 0,
                 daily_sales REAL DEFAULT 0,
                 updated INTEGER DEFAULT 0,
                 PRIMARY KEY (item_id, world)
@@ -159,6 +163,8 @@ def init_db():
             "unit_material_cost",
             "profit_by_listing",
             "profit_by_sale",
+            "profit_margin_pct",
+            "sale_margin_pct",
             "daily_sales",
             "updated",
         ]
@@ -176,6 +182,8 @@ def init_db():
                     unit_material_cost REAL DEFAULT 0,
                     profit_by_listing REAL DEFAULT 0,
                     profit_by_sale REAL DEFAULT 0,
+                    profit_margin_pct REAL DEFAULT 0,
+                    sale_margin_pct REAL DEFAULT 0,
                     daily_sales REAL DEFAULT 0,
                     updated INTEGER DEFAULT 0,
                     PRIMARY KEY (item_id, world)
