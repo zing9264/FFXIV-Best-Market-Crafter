@@ -369,6 +369,7 @@
       <div class="tabs">
         <a class="tab {% if tab == 'lookup' %}active{% endif %}" href="/?tab=lookup">素材查詢</a>
         <a class="tab {% if tab == 'ranking' %}active{% endif %}" href="/?tab=ranking">價差排行</a>
+        <a class="tab {% if tab == 'collectables' %}active{% endif %}" href="/?tab=collectables">收藏品成本</a>
       </div>
 
       <div class="grid">
@@ -524,9 +525,9 @@
 
               <div class="summary">
                 <div class="card">
-                  <div class="label">成品日成交數</div>
+                  <div class="label">成品近三天成交筆數</div>
                   <div class="value">{{ fmt_daily_sales(detail.product.daily_sales) }}</div>
-                  <div class="subvalue">來自價格資料的 sale velocity</div>
+                  <div class="subvalue">/history 三天內筆數</div>
                 </div>
                 <div class="card">
                   <div class="label">成品上次成交價</div>
@@ -573,7 +574,7 @@
                       <th>最低價</th>
                       <th>最低價世界</th>
                       <th>小計</th>
-                      <th>日成交數</th>
+                      <th>近三天成交筆數</th>
                       <th>掛單數</th>
                     </tr>
                   </thead>
@@ -619,10 +620,10 @@
             {% endif %}
           </main>
         </div>
-      {% else %}
+      {% elif tab == "ranking" %}
         <section class="panel">
           <h2>價差排行</h2>
-          <p class="hint">可依 `當前價差 / 當前獲利% / 過去獲利 / 過去獲利%` 排序，並用最低日成交數先過濾。百分比公式皆是 `獲利 / 單件素材成本 * 100`。目前顯示第 {{ ((ranking_page - 1) * ranking_per_page) + 1 }} 到 {{ ((ranking_page - 1) * ranking_per_page) + (top_profits|length) }} 筆，共 {{ ranking_total }} 筆。</p>
+          <p class="hint">可依 `當前價差 / 當前獲利% / 過去獲利 / 過去獲利%` 排序，並用最低近三天成交筆數先過濾。這裡的成交筆數來自 Universalis `/history`。目前材料成本口徑是 `{{ price_scope_label }}`，成品價格仍固定使用 `{{ display_world }}`。百分比公式皆是 `獲利 / 單件素材成本 * 100`。目前顯示第 {{ ((ranking_page - 1) * ranking_per_page) + 1 }} 到 {{ ((ranking_page - 1) * ranking_per_page) + (top_profits|length) }} 筆，共 {{ ranking_total }} 筆。</p>
 
           <form method="get" action="/" class="search-form" style="margin: 0 0 16px;">
             <input type="hidden" name="tab" value="ranking" />
@@ -637,8 +638,15 @@
                 </select>
               </label>
               <label class="hint" style="display: grid; gap: 6px;">
-                最低日成交數
-                <input type="number" min="0" step="0.1" name="min_daily_sales" value="{{ min_daily_sales }}" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);" />
+                物價口徑
+                <select name="price_scope" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);">
+                  <option value="all" {% if price_scope == "all" %}selected{% endif %}>全伺服器</option>
+                  <option value="phoenix" {% if price_scope == "phoenix" %}selected{% endif %}>鳳凰</option>
+                </select>
+              </label>
+              <label class="hint" style="display: grid; gap: 6px;">
+                最低近三天成交筆數
+                <input type="number" min="0" step="1" name="min_daily_sales" value="{{ min_daily_sales }}" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);" />
               </label>
               <label class="hint" style="display: grid; gap: 6px;">
                 最低價差
@@ -667,6 +675,7 @@
           <form method="post" action="/refresh-profits" style="margin: 0 0 16px;">
             <input type="hidden" name="page" value="{{ ranking_page }}" />
             <input type="hidden" name="sort" value="{{ ranking_sort }}" />
+            <input type="hidden" name="price_scope" value="{{ price_scope }}" />
             <input type="hidden" name="min_daily_sales" value="{{ min_daily_sales }}" />
             <input type="hidden" name="min_price_gap" value="{{ min_price_gap }}" />
             <input type="hidden" name="min_past_profit" value="{{ min_past_profit }}" />
@@ -685,12 +694,13 @@
                   <th>ID</th>
                   <th>Yield</th>
                   <th>成品價格</th>
-                  <th>單件素材成本</th>
+                  <th>單件素材成本({{ price_scope_label }})</th>
+                  <th>單件成本({{ display_world }})</th>
                   <th>當前價差</th>
                   <th>當前獲利%</th>
                   <th>過去獲利</th>
                   <th>過去獲利%</th>
-                  <th>日成交數</th>
+                  <th>近三天成交筆數</th>
                 </tr>
               </thead>
               <tbody>
@@ -702,6 +712,7 @@
                     <td>{{ row.yield }}</td>
                     <td class="money">{{ fmt_num(row.sell_price) }}</td>
                     <td class="money">{{ fmt_num(row.unit_material_cost) }}</td>
+                    <td class="money">{{ fmt_num(row.display_unit_material_cost) }}</td>
                     <td class="money positive">{{ fmt_num(row.price_gap) }}</td>
                     <td class="money">{{ fmt_pct_floor(row.profit_margin_pct) }}</td>
                     <td class="money {% if row.past_profit is not none and row.past_profit >= 0 %}positive{% elif row.past_profit is not none %}negative{% endif %}">{{ fmt_num(row.past_profit) }}</td>
@@ -710,7 +721,7 @@
                   </tr>
                 {% else %}
                   <tr>
-                    <td colspan="11" class="muted">目前沒有符合條件的排行資料。先重算價差或放寬過濾條件再試。</td>
+                    <td colspan="12" class="muted">目前沒有符合條件的排行資料。先重算價差或放寬過濾條件再試。</td>
                   </tr>
                 {% endfor %}
               </tbody>
@@ -719,11 +730,72 @@
 
           <div class="actions" style="margin-top: 16px;">
             {% if ranking_page > 1 %}
-              <a class="btn ghost" href="/?tab=ranking&page={{ ranking_page - 1 }}&sort={{ ranking_sort }}&min_daily_sales={{ min_daily_sales }}&min_price_gap={{ min_price_gap }}&min_past_profit={{ min_past_profit }}&min_margin_pct={{ min_margin_pct }}&min_past_margin_pct={{ min_past_margin_pct }}&min_listing_price={{ min_listing_price }}">上一頁</a>
+              <a class="btn ghost" href="/?tab=ranking&page={{ ranking_page - 1 }}&sort={{ ranking_sort }}&price_scope={{ price_scope }}&min_daily_sales={{ min_daily_sales }}&min_price_gap={{ min_price_gap }}&min_past_profit={{ min_past_profit }}&min_margin_pct={{ min_margin_pct }}&min_past_margin_pct={{ min_past_margin_pct }}&min_listing_price={{ min_listing_price }}">上一頁</a>
             {% endif %}
             {% if ranking_page < ranking_total_pages %}
-              <a class="btn ghost" href="/?tab=ranking&page={{ ranking_page + 1 }}&sort={{ ranking_sort }}&min_daily_sales={{ min_daily_sales }}&min_price_gap={{ min_price_gap }}&min_past_profit={{ min_past_profit }}&min_margin_pct={{ min_margin_pct }}&min_past_margin_pct={{ min_past_margin_pct }}&min_listing_price={{ min_listing_price }}">下一頁</a>
+              <a class="btn ghost" href="/?tab=ranking&page={{ ranking_page + 1 }}&sort={{ ranking_sort }}&price_scope={{ price_scope }}&min_daily_sales={{ min_daily_sales }}&min_price_gap={{ min_price_gap }}&min_past_profit={{ min_past_profit }}&min_margin_pct={{ min_margin_pct }}&min_past_margin_pct={{ min_past_margin_pct }}&min_listing_price={{ min_listing_price }}">下一頁</a>
             {% endif %}
+          </div>
+        </section>
+      {% else %}
+        <section class="panel">
+          <h2>收藏品成本</h2>
+          <p class="hint">可切換 `全伺服器 / 鳳凰` 物價口徑來計算單件成本與每張紫票成本；另外固定顯示一欄 `單件成本({{ display_world }})` 方便對照。</p>
+
+          <form method="get" action="/" class="search-form" style="margin: 0 0 16px;">
+            <input type="hidden" name="tab" value="collectables" />
+            <div class="actions">
+              <label class="hint" style="display: grid; gap: 6px;">
+                排序方向
+                <select name="collectable_sort" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);">
+                  <option value="desc" {% if collectable_sort == "desc" %}selected{% endif %}>每張紫票成本高到低</option>
+                  <option value="asc" {% if collectable_sort == "asc" %}selected{% endif %}>每張紫票成本低到高</option>
+                </select>
+              </label>
+              <label class="hint" style="display: grid; gap: 6px;">
+                物價口徑
+                <select name="price_scope" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);">
+                  <option value="all" {% if price_scope == "all" %}selected{% endif %}>全伺服器</option>
+                  <option value="phoenix" {% if price_scope == "phoenix" %}selected{% endif %}>鳳凰</option>
+                </select>
+              </label>
+              <button class="btn ghost" type="submit">套用排序</button>
+            </div>
+          </form>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>收藏品</th>
+                  <th>ID</th>
+                  <th>職業</th>
+                  <th>等級</th>
+                  <th>紫票</th>
+                  <th>單件成本({{ price_scope_label }})</th>
+                  <th>單件成本({{ display_world }})</th>
+                  <th>每張紫票成本({{ price_scope_label }})</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in collectables %}
+                  <tr>
+                    <td><a href="/?tab=lookup&item_id={{ row.item_id }}&q={{ row.name | urlencode }}" style="color: inherit;">{{ row.name }}</a></td>
+                    <td class="muted">{{ row.item_id }}</td>
+                    <td>{{ row.craft_type_name }}</td>
+                    <td>{{ row.class_job_level if row.class_job_level else "-" }}</td>
+                    <td>{{ row.purple_scrips }}</td>
+                    <td class="money">{{ fmt_num(row.unit_material_cost) }}</td>
+                    <td class="money">{{ fmt_num(row.display_unit_material_cost) }}</td>
+                    <td class="money">{{ fmt_num(row.cost_per_scrip) }}</td>
+                  </tr>
+                {% else %}
+                  <tr>
+                    <td colspan="8" class="muted">目前沒有可計算的收藏品資料。先確認 `collectable_rewards.csv` 已匯入且素材價格完整。</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
           </div>
         </section>
       {% endif %}
@@ -739,7 +811,7 @@
                   <th>來源世界</th>
                   <th>Min</th>
                   <th>上次成交價</th>
-                  <th>日成交數</th>
+                  <th>近三天成交筆數</th>
                   <th>掛單數</th>
                   <th>Updated</th>
                 </tr>

@@ -1,26 +1,44 @@
-# FF14 Market Crafter Dev Notes
+# FF14 Market Crafter Developer Manual
 
-## Goal
-Build a local FF14 crafting profit dashboard with:
-- TW item/recipe data imported into SQLite
-- Universalis market data refresh
-- A web UI for recipe lookup, ingredient pricing, and profit comparison
+本文件是開發者手冊，重點不是使用教學，而是記錄目前系統的設計邏輯、資料口徑、頁面職責，以及實作落點。
 
-## Official Recipe Update Flow
-The current recipe/item refresh workflow is manual EXD unpack + local import.
+## 1. 系統總覽
 
-### Step 1. Re-extract TW client data on Windows
+目前專案分成 4 條主流程：
+
+1. 匯入遊戲資料
+   - `import_tc_exd.py`
+   - 讀 `Item.csv` / `Recipe.csv`
+   - 寫入 `items`、`recipes`、`recipe_ingredients`
+
+2. 抓市場價格
+   - `update_prices.py`
+   - 抓 Universalis `繁中服` 與 `鳳凰`
+   - 寫入 `prices`
+
+3. 重算利潤
+   - `update_profits.py`
+   - 讀 `prices` 與配方
+   - 預先算好排行用資料
+   - 寫入 `profits`
+
+4. Web UI
+   - `web_ui.py`
+   - `templates/index.html`
+   - 負責展示、觸發更新、下載 log、查詢排行
+
+## 2. 正式資料更新流程
+
+### 2.1 遊戲資料更新
+
+Windows 端先重新解包：
 
 ```powershell
 cd C:\Users\zing9\Downloads\XivExdUnpacker-win-x64
-.\XivExdUnpacker.exe --language tc --sheets Item Recipe --clear
+.\XivExdUnpacker.exe --language tc --sheets Item Recipe RecipeLevelTable --clear
 ```
 
-This regenerates:
-- `Item.csv`
-- `Recipe.csv`
-
-### Step 2. Re-import into local SQLite from WSL
+WSL 端再匯入：
 
 ```bash
 cd /mnt/d/FF\ tools/bestmarketcrafter
@@ -28,221 +46,461 @@ source .venv-wsl/bin/activate
 python import_tc_exd.py
 ```
 
-This is the only supported recipe refresh path right now.
+這條流程的落點：
+- 設定來源在 `config.py`
+- 匯入程式在 `import_tc_exd.py`
 
-Not used anymore:
-- API recipe crawling
-- old `update_recipes.py` flow
+### 2.2 市場價格更新
 
-## Current Data Rules
-### Core pricing model
-`prices` now stores two separate Universalis scopes for the same item:
+正式口徑不是只抓一個 scope，而是兩個：
 
-- `world='繁中服'`
-  - aggregate scope
-  - used for lowest price across the region
-  - `world_name` is the actual cheapest source world for that row
-- `world='鳳凰'`
-  - single-world scope
-  - used for explicit Phoenix price display
-  - `world_name` is usually `鳳凰`
+- `LOWEST_WORLD = 繁中服`
+- `DISPLAY_WORLD = 鳳凰`
 
-This is intentional.
+更新指令：
 
-Do not try to store Phoenix pulls as:
-- `world='繁中服'`
-- `world_name='鳳凰'`
+```bash
+python update_prices.py
+python update_profits.py
+```
 
-under the current schema, because `prices` uses primary key:
+或從網頁按：
+- `開始更新所有價格`
+
+這條流程的落點：
+- 主要邏輯：`update_prices.py`
+- 全量更新背景執行：`web_ui.py / run_full_refresh_job()`
+- 重算利潤：`update_profits.py / rebuild_profits()`
+
+## 3. 核心資料表
+
+### 3.1 `prices`
+
+用途：
+- 存原始市場資料
+- 一個 item 可同時有 `繁中服` 與 `鳳凰` 兩筆
+
+主鍵：
 - `(item_id, world)`
 
-If both aggregate and Phoenix data used `world='繁中服'`, one row would overwrite the other.
-
-## Why Two Scopes Are Required
-Using only `繁中服` is not enough for the UI requirement.
-
-For aggregate scope responses:
-- `min_price` tells us the cheapest price in the region
-- `world_name` tells us which world that cheapest price came from
-
-But this does **not** tell us:
-- what the Phoenix price is for the same item
-
-Example:
-- a material may have
-  - `繁中服 lowest = 15`
-  - `lowest world = 伊弗利特`
-- while Phoenix may be
-  - `鳳凰 price = 23`
-
-So if the UI needs both:
-- Phoenix price
-- regional lowest price
-
-then we must fetch and store:
-- `繁中服`
-- `鳳凰`
-
-separately.
-
-## Current UI Read Rules
-### Product display
-- product price: read from `prices.world='鳳凰'`
-- product last sale price: read from `prices.world='鳳凰'`
-- product daily sales: read from `prices.world='鳳凰'`
-
-### Ingredient display
-- `最低價`: read from `prices.world='繁中服'`
-- `最低價世界`: read from `prices.world='繁中服'.world_name`
-- `鳳凰價`: read from `prices.world='鳳凰'`
-
-### Cost calculation
-- material line total uses `繁中服` lowest price
-- total material cost uses `繁中服` lowest price
-- price gap uses:
-  - `鳳凰 product price`
-  - minus `繁中服 material cost`
-
-This is deliberate:
-- selling assumption = Phoenix
-- shopping assumption = best price within TC region
-
-## Current Profit Storage
-`profits` is now the precomputed ranking source.
-
-It stores at least:
+主要欄位：
 - `item_id`
 - `world`
 - `world_name`
-- `listing_price`
-- `sale_price`
-- `material_total`
-- `unit_material_cost`
-- `profit_by_listing`
-- `profit_by_sale`
-- `daily_sales`
-- `updated`
-
-Current ranking world:
-- `world='鳳凰'`
-
-Meaning:
-- ranking compares Phoenix product price
-- against TC regional lowest material cost
-
-## update_prices.py Rules
-Running `update_prices.py` now means:
-
-1. fetch all relevant items for `繁中服`
-2. fetch all relevant items for `鳳凰`
-3. normalize both into the same `prices` schema
-
-### Real API normalization notes
-Validated with actual Universalis responses:
-
-- `繁中服`
-  - top-level `worldName` may be missing
-  - fallback is needed from:
-    - `listings[0].worldName`
-    - then `recentHistory[0].worldName`
-- `鳳凰`
-  - top-level `worldName` is present
-
-Current normalization in `build_price_row()`:
-- `world_name` priority:
-  - top-level `worldName`
-  - listings first row `worldName`
-  - recentHistory first row `worldName`
-
-Other stored fields:
 - `min_price`
 - `sale_price`
 - `listings`
 - `daily_sales`
 - `last_updated`
 
-## Web UI Buttons
-### Single recipe refresh
-The lookup page button:
-- updates the selected product
-- updates that product's recipe ingredients
-- fetches both:
-  - `繁中服`
-  - `鳳凰`
-- then rebuilds `profits`
+設計重點：
+- `world='繁中服'` 表示區域最低價 scope
+- `world='鳳凰'` 表示鳳凰單世界價格
+- 這兩筆不能混寫成同一筆
 
-### Full refresh
-The main dashboard now has a full-refresh control.
+實作位置：
+- schema：`db.py / init_db()`
+- 寫入：`update_prices.py / persist_rows()`
 
-Expected behavior:
-- fetch all prices for `繁中服`
-- fetch all prices for `鳳凰`
-- rebuild `profits`
-- expose status in `/refresh-status`
+### 3.2 `profits`
 
-Progress panel shows:
-- current scope
-- completed batches / total batches
-- updated row count
-- rebuilt profit count
+用途：
+- 存排行與利潤頁面使用的預先計算結果
+- 避免每次開排行頁都即時計算整張表
 
-## Current Caveat
-If only a few Phoenix rows exist, ranking will look "broken" even when the page itself is fine.
+目前 `world` 欄位的語意：
+- 不是成品世界
+- 而是「素材成本口徑」
 
-That is because ranking now depends on:
-- product rows existing in `world='鳳凰'`
+目前會有兩種 world：
+- `繁中服`
+- `鳳凰`
 
-If `鳳凰` is incomplete:
-- lookup page may still partly work
-- ranking coverage will be very small
+代表：
+- 同一個成品，會預先算兩份成本口徑
+- 成品價格仍固定讀 `DISPLAY_WORLD = 鳳凰`
 
-So when ranking suddenly becomes tiny, the first thing to check is:
-- whether `鳳凰` prices have been fully refreshed
+主要欄位：
+- `listing_price`
+- `sale_price`
+- `material_total`
+- `unit_material_cost`
+- `display_unit_material_cost`
+- `profit_by_listing`
+- `profit_by_sale`
+- `profit_margin_pct`
+- `sale_margin_pct`
+- `daily_sales`
 
-## Verified Example
-### Item 41618 `翠光騎士武具`
-This item was used to verify the dual-scope fix.
+欄位語意：
+- `unit_material_cost`
+  - 目前選定口徑的單件素材成本
+  - world=繁中服 時就是全伺服器最低成本
+  - world=鳳凰 時就是鳳凰成本
+- `display_unit_material_cost`
+  - 固定存鳳凰單件成本
+  - 用來在排行頁額外顯示 `單件成本(鳳凰)`
 
-Before dual-scope refresh:
-- some ingredients had `繁中服` lowest price
-- but no Phoenix price
+實作位置：
+- schema：`db.py / init_db()`
+- 重算：`update_profits.py / rebuild_profits()`
 
-After refreshing both scopes:
-- missing Phoenix ingredient prices appeared correctly
+### 3.3 `collectable_rewards`
 
-Examples observed after refresh:
-- `半魔晶石壹型`
-  - `繁中服 lowest = 444`
-  - `lowest world = 巴哈姆特`
-  - `鳳凰 = 800`
-- `火之晶簇`
-  - `繁中服 lowest = 28`
-  - `鳳凰 = 35`
-- `矮人銀錠`
-  - `繁中服 lowest = 120`
-  - `鳳凰 = 690`
+用途：
+- 收藏品票數與職業/等級的本地對照表
 
-This confirmed the data model issue was real:
-- aggregate-only data cannot provide explicit Phoenix price
+來源：
+- `data/collectable_rewards.csv`
+- `import_collectable_rewards.py`
 
-## Useful Commands
-Run web UI in WSL:
+主要欄位：
+- `item_id`
+- `purple_scrips`
+- `class_job_level`
+- `recipe_level_table`
+- `craft_type`
+
+## 4. 價格口徑規則
+
+這是目前整個系統最重要的設計。
+
+### 4.1 成品價格口徑
+
+成品價格固定看：
+- `DISPLAY_WORLD = 鳳凰`
+
+原因：
+- 使用者實際要賣的世界是鳳凰
+- 排行與收藏品比較都以鳳凰售價為基準
+
+### 4.2 素材成本口徑
+
+素材成本現在可切換兩種：
+
+- `全伺服器`
+  - 實際讀 `world='繁中服'`
+  - 代表繁中服區域最低成本
+- `鳳凰`
+  - 實際讀 `world='鳳凰'`
+  - 代表若只在鳳凰買材料的成本
+
+這個切換會影響：
+- 排行頁的 `單件素材成本`
+- 當前價差
+- 當前獲利%
+- 過去獲利
+- 過去獲利%
+- 收藏品頁的 `單件成本`
+- 收藏品頁的 `每張紫票成本`
+
+不會影響：
+- 成品價格
+- 成品上次成交價
+- 成品成交筆數
+
+### 4.3 為什麼固定再多顯示一欄 `單件成本(鳳凰)`
+
+因為使用者想同時知道：
+- 用目前所選口徑算出來的成本
+- 與鳳凰實際成本相比差多少
+
+所以現在：
+- 排行頁會同時顯示
+  - `單件素材成本(目前口徑)`
+  - `單件成本(鳳凰)`
+- 收藏品頁也同樣顯示
+
+## 5. 頁面設計邏輯
+
+整個網站目前都在同一個 route：
+- `web_ui.py / index()`
+- `templates/index.html`
+
+切頁靠 query param：
+- `tab=lookup`
+- `tab=ranking`
+- `tab=collectables`
+
+### 5.1 首頁/查詢頁 `tab=lookup`
+
+用途：
+- 單品查詢
+- 查看成品價格、材料明細、價差
+- 針對單一配方即時更新價格
+
+資料來源：
+- 搜尋結果：`web_ui.py / search_items()`
+- 單品明細：`web_ui.py / load_recipe_detail()`
+
+設計邏輯：
+- 成品價格固定讀鳳凰
+- 素材表同時顯示：
+  - `鳳凰價`
+  - `最低價`
+  - `最低價世界`
+- 單張配方更新時只更新：
+  - 該成品
+  - 該配方所有素材
+
+按鈕：
+- `更新這張製作表價格`
+  - route：`web_ui.py / refresh_recipe_prices()`
+  - 會抓 `繁中服 + 鳳凰`
+  - 然後重算 `profits`
+
+模板位置：
+- `templates/index.html`
+- `tab == "lookup"` 那一段
+
+### 5.2 排行頁 `tab=ranking`
+
+用途：
+- 顯示預先算好的利潤排行
+- 提供排序、過濾、分頁
+
+資料來源：
+- `web_ui.py / get_profit_count()`
+- `web_ui.py / get_top_profit_rows()`
+- 背後讀的是 `profits`
+
+設計邏輯：
+- 不在頁面臨時計算利潤
+- 利潤要先由 `update_profits.py` 預先算入 DB
+- 切換 `物價口徑` 時，只是切 `profits.world`
+
+目前支援排序：
+- `當前價差`
+- `當前獲利%`
+- `過去獲利`
+- `過去獲利%`
+
+目前支援過濾：
+- `最低近三天成交筆數`
+- `最低價差`
+- `最低過去獲利`
+- `最低當前獲利%`
+- `最低過去獲利%`
+- `最低成品價格`
+- `物價口徑`
+
+分頁：
+- 每頁 `100` 筆
+- page query param 由 `load_dashboard_data()` 處理
+
+按鈕：
+- `重算總價差`
+  - route：`web_ui.py / refresh_profits()`
+  - 直接跑 `rebuild_profits()`
+
+模板位置：
+- `templates/index.html`
+- `tab == "ranking"` 那一段
+
+### 5.3 收藏品成本頁 `tab=collectables`
+
+用途：
+- 顯示收藏品的職業、等級、紫票
+- 計算單件成本與每張紫票成本
+
+資料來源：
+- `web_ui.py / get_collectable_rows()`
+- 讀：
+  - `collectable_rewards`
+  - `recipes`
+  - `recipe_ingredients`
+  - `prices`
+
+設計邏輯：
+- 支援 `全伺服器 / 鳳凰` 物價口徑
+- 每張紫票成本 = `單件成本 / purple_scrips`
+- 固定再顯示一欄 `單件成本(鳳凰)` 作為對照
+
+排序：
+- `每張紫票成本高到低`
+- `每張紫票成本低到高`
+
+模板位置：
+- `templates/index.html`
+- `tab == "collectables"` 那一段
+
+### 5.4 最近價格更新區塊
+
+用途：
+- 顯示最近寫進 `prices` 的資料
+- 快速檢查市場更新是否成功
+
+資料來源：
+- `web_ui.py / get_latest_prices()`
+
+內容：
+- item 名稱
+- 來源世界
+- 最低價
+- 上次成交價
+- 近三天成交筆數
+- 掛單數
+- 更新時間
+
+模板位置：
+- `templates/index.html`
+- 頁面最下方 `最近價格更新`
+
+## 6. 全量更新與進度面板
+
+### 6.1 全量更新
+
+route：
+- `web_ui.py / refresh_all_prices()`
+
+背景工作：
+- `web_ui.py / start_full_refresh_job()`
+- `web_ui.py / run_full_refresh_job()`
+
+執行順序：
+1. 更新 `繁中服`
+2. 更新 `鳳凰`
+3. 重算 `profits`
+
+### 6.2 中斷更新
+
+route：
+- `web_ui.py / cancel_refresh()`
+
+方式：
+- 只設定 `cancel_requested`
+- 目前 batch 完成後才停
+
+### 6.3 進度面板
+
+前端輪詢：
+- `/refresh-status`
+
+route：
+- `web_ui.py / refresh_status()`
+
+前端更新位置：
+- `templates/index.html` 內的 `fetch("/refresh-status")` script
+
+顯示內容：
+- running 狀態
+- phase
+- world
+- batch 進度
+- 更新筆數
+- profit 重算筆數
+- 錯誤訊息
+
+## 7. Log 與下載
+
+### 7.1 App Log
+
+檔案：
+- `config.APP_LOG_PATH`
+
+寫入 helper：
+- `web_ui.py / append_app_log()`
+
+下載 route：
+- `web_ui.py / download_app_log()`
+
+### 7.2 Refresh Stats
+
+檔案：
+- `config.REFRESH_STATS_PATH`
+
+寫入 helper：
+- `web_ui.py / append_refresh_stats()`
+
+下載 route：
+- `web_ui.py / download_refresh_stats()`
+
+## 8. 最近成交筆數設計
+
+目前 `prices.daily_sales` 的語意不是 velocity，而是：
+- 近三天成交筆數
+
+計算來源：
+- Universalis `/api/v2/history/{worldDcRegion}/{itemIds}`
+- 取 `entries`
+- 用 timestamp 過濾最近 3 天
+
+實作位置：
+- `update_prices.py / fetch_history()`
+- `update_prices.py / count_recent_sales()`
+- `update_prices.py / build_price_row()`
+
+這個欄位名稱歷史上曾經存過 velocity，因此之後如果再改口徑，要先注意：
+- `prices.daily_sales`
+- `profits.daily_sales`
+- UI 文案
+- 排行過濾條件
+
+## 9. 關鍵函式與落點速查
+
+### 資料庫
+- schema 初始化：`db.py / init_db()`
+- 取得連線：`db.py / get_conn()`
+
+### 市場更新
+- 取得所有 item ids：`update_prices.py / get_item_ids()`
+- 抓價格：`update_prices.py / fetch_prices()`
+- 抓成交歷史：`update_prices.py / fetch_history()`
+- 正規化一列價格：`update_prices.py / build_price_row()`
+- 更新單一 world：`update_prices.py / update_prices_async()`
+- 更新多 world：`update_prices.py / update_prices_for_worlds()`
+
+### 利潤
+- 重算全部利潤：`update_profits.py / rebuild_profits()`
+
+### Web UI
+- 主資料組裝：`web_ui.py / load_dashboard_data()`
+- 查詢頁明細：`web_ui.py / load_recipe_detail()`
+- 排行頁資料：`web_ui.py / get_top_profit_rows()`
+- 收藏品資料：`web_ui.py / get_collectable_rows()`
+
+### Route
+- 首頁：`web_ui.py / index()`
+- 單配方更新：`web_ui.py / refresh_recipe_prices()`
+- 全量更新：`web_ui.py / refresh_all_prices()`
+- 中斷更新：`web_ui.py / cancel_refresh()`
+- 重算價差：`web_ui.py / refresh_profits()`
+- 更新狀態：`web_ui.py / refresh_status()`
+- 下載 app log：`web_ui.py / download_app_log()`
+- 下載 refresh stats：`web_ui.py / download_refresh_stats()`
+
+## 10. 後續開發注意事項
+
+1. 如果改了價格口徑，不要只改模板。
+   - 先確認 `prices`
+   - 再確認 `profits`
+   - 最後才是 UI 文案
+
+2. 如果改了排行欄位，不要在頁面臨時計算大表。
+   - 優先把邏輯收進 `update_profits.py`
+
+3. 如果改了收藏品票數規則，先改：
+   - `data/collectable_scrip_rates.csv`
+   - `scripts/build_collectable_rewards.py`
+   - 再重建 `data/collectable_rewards.csv`
+   - 最後重新 `python import_collectable_rewards.py`
+
+4. 如果查詢頁、排行頁、收藏品頁對同一個欄位語意不一致，先回頭檢查：
+   - `load_dashboard_data()`
+   - `get_top_profit_rows()`
+   - `get_collectable_rows()`
+
+## 11. 常用命令
+
+### 啟動網站
 
 ```bash
 cd /mnt/d/FF\ tools/bestmarketcrafter
 source .venv-wsl/bin/activate
-python -c 'from web_ui import app; app.run(host="127.0.0.1", port=5000, debug=False)'
+FF14_APP_HOST=0.0.0.0 python web_ui.py
 ```
 
-Run tests:
-
-```bash
-cd /mnt/d/FF\ tools/bestmarketcrafter
-source .venv-wsl/bin/activate
-python -m unittest tests.test_web_ui
-```
-
-Run full market refresh from CLI:
+### 全量刷新
 
 ```bash
 cd /mnt/d/FF\ tools/bestmarketcrafter
@@ -251,21 +509,26 @@ python update_prices.py
 python update_profits.py
 ```
 
-Refresh one recipe set manually for both scopes:
+### 匯入收藏品票數表
 
 ```bash
 cd /mnt/d/FF\ tools/bestmarketcrafter
 source .venv-wsl/bin/activate
-python - <<'PY'
-import sqlite3
-from update_prices import update_prices_for_worlds
+python import_collectable_rewards.py
+```
 
-item_id = 41618
-conn = sqlite3.connect("db.sqlite")
-cur = conn.cursor()
-cur.execute("SELECT ingredient_item_id FROM recipe_ingredients WHERE output_item_id=?", (item_id,))
-ids = [item_id] + [row[0] for row in cur.fetchall()]
-print(update_prices_for_worlds(ids, ["繁中服", "鳳凰"]))
-PY
-python update_profits.py
+### 重建收藏品對照 CSV
+
+```bash
+cd /mnt/d/FF\ tools/bestmarketcrafter
+source .venv-wsl/bin/activate
+python scripts/build_collectable_rewards.py
+```
+
+### 跑測試
+
+```bash
+cd /mnt/d/FF\ tools/bestmarketcrafter
+source .venv-wsl/bin/activate
+python -m unittest tests.test_web_ui
 ```

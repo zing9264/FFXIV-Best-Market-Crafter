@@ -24,12 +24,30 @@ from config import (
     REFRESH_STATS_PATH,
 )
 from db import get_conn, init_db
+from import_collectable_rewards import import_collectable_rewards
 from update_prices import update_prices_async, update_prices_for_worlds
 from update_profits import rebuild_profits
 
 
 app = Flask(__name__)
 init_db()
+import_collectable_rewards()
+
+CRAFT_TYPE_NAMES = {
+    0: "木工",
+    1: "鍛鐵",
+    2: "鎧甲",
+    3: "雕金",
+    4: "製革",
+    5: "裁衣",
+    6: "煉金",
+    7: "烹調",
+}
+
+PRICE_SCOPE_CHOICES = {
+    "all": {"world": LOWEST_WORLD, "label": "全伺服器"},
+    "phoenix": {"world": DISPLAY_WORLD, "label": DISPLAY_WORLD},
+}
 
 refresh_state_lock = threading.Lock()
 refresh_thread: threading.Thread | None = None
@@ -83,13 +101,18 @@ def fmt_pct_floor(value: float | None) -> str:
 def fmt_daily_sales(value: float | None) -> str:
     if value is None:
         return "-"
-    return f"{value:,.2f}"
+    return f"{math.floor(value):,}"
 
 
 def normalize_nonzero_value(value: float | None) -> float | None:
     if value is None:
         return None
     return value if value > 0 else None
+
+
+def parse_price_scope(value: str | None) -> str:
+    key = (value or "all").strip().lower()
+    return key if key in PRICE_SCOPE_CHOICES else "all"
 
 
 def ensure_parent_dir(path_str: str) -> Path:
@@ -573,6 +596,71 @@ def get_recipe_item_ids(conn, item_id: int) -> list[int]:
     return sorted(set(int(value) for value in ids if int(value) > 0))
 
 
+def get_collectable_rows(conn, pricing_world: str, sort_dir: str = "desc"):
+    order = "DESC" if sort_dir == "desc" else "ASC"
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT
+            cr.item_id,
+            i.name,
+            cr.craft_type,
+            cr.class_job_level,
+            cr.purple_scrips,
+            SUM(ri.qty * fp.min_price) / r.yield AS unit_material_cost,
+            CASE
+                WHEN COUNT(pp.item_id) = COUNT(*)
+                THEN SUM(ri.qty * pp.min_price) / r.yield
+                ELSE 0
+            END AS display_unit_material_cost,
+            (SUM(ri.qty * fp.min_price) / r.yield) / cr.purple_scrips AS cost_per_scrip
+        FROM collectable_rewards cr
+        JOIN items i ON i.item_id = cr.item_id
+        JOIN recipes r ON r.output_item_id = cr.item_id
+        JOIN recipe_ingredients ri ON ri.output_item_id = cr.item_id
+        JOIN prices fp
+          ON fp.item_id = ri.ingredient_item_id
+         AND fp.world = ?
+         AND fp.min_price > 0
+        LEFT JOIN prices pp
+          ON pp.item_id = ri.ingredient_item_id
+         AND pp.world = ?
+         AND pp.min_price > 0
+        WHERE cr.purple_scrips > 0
+        GROUP BY
+            cr.item_id,
+            i.name,
+            cr.craft_type,
+            cr.class_job_level,
+            cr.purple_scrips,
+            r.yield
+        HAVING COUNT(*) = (
+            SELECT COUNT(*)
+            FROM recipe_ingredients ri2
+            WHERE ri2.output_item_id = cr.item_id
+        )
+        ORDER BY cost_per_scrip {order}, cr.item_id ASC;
+        """,
+        (pricing_world, DISPLAY_WORLD),
+    )
+    rows = []
+    for row in cur.fetchall():
+        rows.append(
+            {
+                "item_id": row[0],
+                "name": row[1] or f"Item {row[0]}",
+                "craft_type": row[2],
+                "craft_type_name": CRAFT_TYPE_NAMES.get(row[2], f"職業{row[2]}"),
+                "class_job_level": row[3],
+                "purple_scrips": row[4],
+                "unit_material_cost": row[5],
+                "display_unit_material_cost": normalize_nonzero_value(row[6]),
+                "cost_per_scrip": row[7],
+            }
+        )
+    return rows
+
+
 def parse_nonnegative_float(value: str, default: float = 0.0) -> float:
     try:
         parsed = float(value)
@@ -583,6 +671,7 @@ def parse_nonnegative_float(value: str, default: float = 0.0) -> float:
 
 def get_profit_count(
     conn,
+    profit_world: str,
     min_daily_sales: float = 0.0,
     min_price_gap: float = 0.0,
     min_past_profit: float = 0.0,
@@ -604,7 +693,7 @@ def get_profit_count(
           AND listing_price >= ?;
         """,
         (
-            DISPLAY_WORLD,
+            profit_world,
             min_daily_sales,
             min_price_gap,
             min_past_profit,
@@ -618,6 +707,7 @@ def get_profit_count(
 
 def get_top_profit_rows(
     conn,
+    profit_world: str,
     limit: int = 100,
     offset: int = 0,
     sort_by: str = "profit",
@@ -645,6 +735,7 @@ def get_top_profit_rows(
             p.world_name,
             p.daily_sales,
             p.unit_material_cost,
+            p.display_unit_material_cost,
             p.profit_by_listing,
             p.profit_margin_pct,
             p.profit_by_sale,
@@ -663,7 +754,7 @@ def get_top_profit_rows(
         LIMIT ? OFFSET ?;
         """,
         (
-            DISPLAY_WORLD,
+            profit_world,
             min_daily_sales,
             min_price_gap,
             min_past_profit,
@@ -685,10 +776,11 @@ def get_top_profit_rows(
                 "world_name": row[4] or DISPLAY_WORLD,
                 "daily_sales": normalize_nonzero_value(row[5]),
                 "unit_material_cost": row[6],
-                "price_gap": row[7],
-                "profit_margin_pct": row[8],
-                "past_profit": row[9],
-                "past_margin_pct": row[10],
+                "display_unit_material_cost": normalize_nonzero_value(row[7]),
+                "price_gap": row[8],
+                "profit_margin_pct": row[9],
+                "past_profit": row[10],
+                "past_margin_pct": row[11],
             }
         )
     return rows
@@ -710,6 +802,12 @@ def load_dashboard_data():
     min_margin_pct = parse_nonnegative_float(request.args.get("min_margin_pct", "0"), default=0.0)
     min_past_margin_pct = parse_nonnegative_float(request.args.get("min_past_margin_pct", "0"), default=0.0)
     min_listing_price = parse_nonnegative_float(request.args.get("min_listing_price", "0"), default=0.0)
+    price_scope = parse_price_scope(request.args.get("price_scope", "all"))
+    price_scope_world = PRICE_SCOPE_CHOICES[price_scope]["world"]
+    price_scope_label = PRICE_SCOPE_CHOICES[price_scope]["label"]
+    collectable_sort = request.args.get("collectable_sort", "desc").strip()
+    if collectable_sort not in {"asc", "desc"}:
+        collectable_sort = "desc"
     page_raw = request.args.get("page", "1").strip()
     page = int(page_raw) if page_raw.isdigit() and int(page_raw) > 0 else 1
     per_page = 100
@@ -730,6 +828,7 @@ def load_dashboard_data():
         total_profit_rows = (
             get_profit_count(
                 conn,
+                profit_world=price_scope_world,
                 min_daily_sales=min_daily_sales,
                 min_price_gap=min_price_gap,
                 min_past_profit=min_past_profit,
@@ -743,6 +842,7 @@ def load_dashboard_data():
         top_profits = (
             get_top_profit_rows(
                 conn,
+                profit_world=price_scope_world,
                 limit=per_page,
                 offset=offset,
                 sort_by=ranking_sort,
@@ -754,6 +854,11 @@ def load_dashboard_data():
                 min_listing_price=min_listing_price,
             )
             if tab == "ranking"
+            else []
+        )
+        collectables = (
+            get_collectable_rows(conn, pricing_world=price_scope_world, sort_dir=collectable_sort)
+            if tab == "collectables"
             else []
         )
 
@@ -776,6 +881,11 @@ def load_dashboard_data():
         "ranking_total": total_profit_rows,
         "ranking_total_pages": total_pages,
         "ranking_sort": ranking_sort,
+        "price_scope": price_scope,
+        "price_scope_label": price_scope_label,
+        "price_scope_choices": PRICE_SCOPE_CHOICES,
+        "collectables": collectables,
+        "collectable_sort": collectable_sort,
         "min_daily_sales": min_daily_sales,
         "min_price_gap": min_price_gap,
         "min_past_profit": min_past_profit,
@@ -874,6 +984,7 @@ def refresh_profits():
     min_margin_pct = parse_nonnegative_float(request.form.get("min_margin_pct", "0"), default=0.0)
     min_past_margin_pct = parse_nonnegative_float(request.form.get("min_past_margin_pct", "0"), default=0.0)
     min_listing_price = parse_nonnegative_float(request.form.get("min_listing_price", "0"), default=0.0)
+    price_scope = parse_price_scope(request.form.get("price_scope", "all"))
     try:
         updated = rebuild_profits()
         return redirect(
@@ -882,6 +993,7 @@ def refresh_profits():
                 tab="ranking",
                 page=page,
                 sort=ranking_sort,
+                price_scope=price_scope,
                 min_daily_sales=min_daily_sales,
                 min_price_gap=min_price_gap,
                 min_past_profit=min_past_profit,
@@ -899,6 +1011,7 @@ def refresh_profits():
                 tab="ranking",
                 page=page,
                 sort=ranking_sort,
+                price_scope=price_scope,
                 min_daily_sales=min_daily_sales,
                 min_price_gap=min_price_gap,
                 min_past_profit=min_past_profit,

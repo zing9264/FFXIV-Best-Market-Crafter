@@ -53,6 +53,7 @@ def seed_db(db_path: str) -> None:
             sale_price REAL DEFAULT 0,
             material_total REAL DEFAULT 0,
             unit_material_cost REAL DEFAULT 0,
+            display_unit_material_cost REAL DEFAULT 0,
             profit_by_listing REAL DEFAULT 0,
             profit_by_sale REAL DEFAULT 0,
             profit_margin_pct REAL DEFAULT 0,
@@ -60,6 +61,14 @@ def seed_db(db_path: str) -> None:
             daily_sales REAL DEFAULT 0,
             updated INTEGER DEFAULT 0,
             PRIMARY KEY (item_id, world)
+        );
+
+        CREATE TABLE collectable_rewards (
+            item_id INTEGER PRIMARY KEY,
+            purple_scrips INTEGER DEFAULT 45,
+            class_job_level INTEGER DEFAULT 0,
+            recipe_level_table INTEGER DEFAULT 0,
+            craft_type INTEGER DEFAULT -1
         );
         """
     )
@@ -70,14 +79,20 @@ def seed_db(db_path: str) -> None:
             (200, "素材甲"),
             (300, "素材乙"),
             (999, "其他項目"),
+            (500, "收藏用測試品"),
+            (501, "收藏素材甲"),
+            (502, "收藏素材乙"),
         ],
     )
     cur.execute("INSERT INTO recipes(output_item_id, yield) VALUES(100, 1);")
+    cur.execute("INSERT INTO recipes(output_item_id, yield) VALUES(500, 1);")
     cur.executemany(
         "INSERT INTO recipe_ingredients(output_item_id, ingredient_item_id, qty) VALUES(?, ?, ?);",
         [
             (100, 200, 2),
             (100, 300, 3),
+            (500, 501, 2),
+            (500, 502, 1),
         ],
     )
     cur.execute(
@@ -103,6 +118,8 @@ def seed_db(db_path: str) -> None:
         [
             (200, "鳳凰", 50),
             (300, "巴哈姆特", 20),
+            (501, "鳳凰", 100),
+            (502, "巴哈姆特", 50),
         ],
     )
     cur.execute(
@@ -115,14 +132,21 @@ def seed_db(db_path: str) -> None:
     cur.executemany(
         """
         INSERT INTO profits(
-            item_id, world, world_name, listing_price, sale_price, material_total, unit_material_cost,
+            item_id, world, world_name, listing_price, sale_price, material_total, unit_material_cost, display_unit_material_cost,
             profit_by_listing, profit_by_sale, profit_margin_pct, sale_margin_pct, daily_sales, updated
-        ) VALUES(?, '鳳凰', '鳳凰', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1234567890);
+        ) VALUES(?, ?, '鳳凰', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1234567890);
         """,
         [
-            (100, 2500, 2200, 2000, 2000, 500, 200, 25, 10, 1.2),
-            (999, 400, 350, 200, 200, 200, 150, 100, 75, 0.4),
+            (100, "繁中服", 2500, 2200, 2000, 2000, 2300, 500, 200, 25, 10, 1.2),
+            (100, "鳳凰", 2500, 2200, 2300, 2300, 2300, 200, 0, 8, 0, 1.2),
+            (999, "繁中服", 400, 350, 200, 200, 250, 200, 150, 100, 75, 0.4),
         ],
+    )
+    cur.execute(
+        """
+        INSERT INTO collectable_rewards(item_id, purple_scrips, class_job_level, recipe_level_table, craft_type)
+        VALUES(500, 95, 90, 999, 0);
+        """
     )
     conn.commit()
     conn.close()
@@ -135,7 +159,11 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
         cls.db_path = os.path.join(cls.temp_dir.name, "test.sqlite")
         cls.app_log_path = os.path.join(cls.temp_dir.name, "app.log")
         cls.refresh_stats_path = os.path.join(cls.temp_dir.name, "refresh_stats.jsonl")
+        cls.collectable_rewards_path = os.path.join(cls.temp_dir.name, "collectable_rewards.csv")
         seed_db(cls.db_path)
+        with open(cls.collectable_rewards_path, "w", encoding="utf-8", newline="") as handle:
+            handle.write("item_id,name,purple_scrips,class_job_level,recipe_level_table,craft_type\n")
+            handle.write("500,收藏用測試品,95,90,999,0\n")
 
         os.environ["FF14_DB_PATH"] = cls.db_path
         os.environ["FF14_WORLD"] = "繁中服"
@@ -145,6 +173,7 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
         os.environ["FF14_FULL_REFRESH_COOLDOWN_SECONDS"] = "600"
         os.environ["FF14_APP_LOG_PATH"] = cls.app_log_path
         os.environ["FF14_REFRESH_STATS_PATH"] = cls.refresh_stats_path
+        os.environ["FF14_COLLECTABLE_REWARDS_CSV_PATH"] = cls.collectable_rewards_path
 
         import config
         import db
@@ -169,6 +198,7 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
         os.environ.pop("FF14_FULL_REFRESH_COOLDOWN_SECONDS", None)
         os.environ.pop("FF14_APP_LOG_PATH", None)
         os.environ.pop("FF14_REFRESH_STATS_PATH", None)
+        os.environ.pop("FF14_COLLECTABLE_REWARDS_CSV_PATH", None)
 
     def setUp(self):
         self.web_ui.cooldown_state["last_recipe_refresh_at"] = 0.0
@@ -264,6 +294,7 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
         self.assertIn("當前獲利%", body)
         self.assertIn("測試成品", body)
         self.assertNotIn("其他項目", body)
+        self.assertIn("單件成本(鳳凰)", body)
 
     def test_ranking_page_supports_past_profit_sort(self):
         client = self.app.test_client()
@@ -273,6 +304,33 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("過去獲利", body)
         self.assertIn("測試成品", body)
+
+    def test_ranking_page_supports_price_scope_switch(self):
+        client = self.app.test_client()
+        response = client.get("/?tab=ranking&price_scope=phoenix")
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("單件素材成本(鳳凰)", body)
+        self.assertIn("2,300", body)
+
+    def test_collectables_page_renders_cost_per_scrip(self):
+        client = self.app.test_client()
+        response = client.get("/?tab=collectables&collectable_sort=desc")
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("收藏品成本", body)
+        self.assertIn("收藏用測試品", body)
+        self.assertIn("木工", body)
+
+    def test_collectables_page_supports_price_scope_switch(self):
+        client = self.app.test_client()
+        response = client.get("/?tab=collectables&collectable_sort=desc&price_scope=phoenix")
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("每張紫票成本(鳳凰)", body)
 
     def test_refresh_profits_redirects_with_count(self):
         client = self.app.test_client()
@@ -339,6 +397,15 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
             self.assertIn("測試 app log", response.get_data(as_text=True))
         finally:
             response.close()
+
+    def test_count_recent_sales_uses_history_entries(self):
+        now = int(time.time())
+        entries = [
+            {"timestamp": now - (1 * 24 * 60 * 60)},
+            {"timestamp": now - (2 * 24 * 60 * 60)},
+            {"timestamp": now - (4 * 24 * 60 * 60)},
+        ]
+        self.assertEqual(self.update_prices.count_recent_sales(entries, days=3), 2)
 
     def test_download_refresh_stats_returns_file(self):
         client = self.app.test_client()

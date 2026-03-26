@@ -50,6 +50,21 @@ def normalize_timestamp(ts: Optional[int]) -> Optional[int]:
     return ts
 
 
+def count_recent_sales(recent_history: list[dict], days: int = 3) -> int:
+    if not isinstance(recent_history, list) or not recent_history:
+        return 0
+    now = int(time.time())
+    cutoff = now - (days * 24 * 60 * 60)
+    count = 0
+    for row in recent_history:
+        if not isinstance(row, dict):
+            continue
+        ts = normalize_timestamp(first_key(row, ["timestamp", "Timestamp"]))
+        if ts is not None and ts >= cutoff:
+            count += 1
+    return count
+
+
 def first_key(d: dict, keys: Iterable[str]):
     for k in keys:
         if k in d and d[k] is not None:
@@ -106,41 +121,56 @@ async def fetch_prices(session: aiohttp.ClientSession, limiter: RateLimiter, ids
         return await resp.json()
 
 
-def build_price_row(item: dict, world: str):
-    item_id = first_key(item, ["itemID", "itemId", "item_id"])
+async def fetch_history(session: aiohttp.ClientSession, limiter: RateLimiter, ids: List[int], world: str):
+    await limiter.wait()
+    ids_param = ",".join(str(i) for i in ids)
+    url = f"{UNIVERSALIS_BASE_URL}/history/{world}/{ids_param}"
+    async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+        resp.raise_for_status()
+        return await resp.json()
+
+
+def build_price_row(price_item: dict, history_item: dict, world: str):
+    item_id = first_key(price_item, ["itemID", "itemId", "item_id"]) or first_key(
+        history_item, ["itemID", "itemId", "item_id"]
+    )
     if not item_id:
         return None
 
-    p50 = first_key(item, ["p50", "p50Price", "p50_price"])
-    min_price = first_key(item, ["minPrice", "min_price"])
-    listings = item.get("listings")
+    p50 = first_key(price_item, ["p50", "p50Price", "p50_price"])
+    min_price = first_key(price_item, ["minPrice", "min_price"])
+    listings = price_item.get("listings")
     if isinstance(listings, list):
         listings = len(listings)
     if listings is None:
-        listings = item.get("listingsCount")
+        listings = price_item.get("listingsCount")
 
-    daily_sales = first_key(
-        item,
-        [
-            "regularSaleVelocity",
-            "saleVelocity",
-            "dailySales",
-        ],
+    history_entries = history_item.get("entries", []) or []
+    daily_sales = count_recent_sales(history_entries, days=3)
+
+    price_last_updated = normalize_timestamp(
+        first_key(price_item, ["lastUploadTime", "lastUpload", "lastUpdated", "last_updated"])
     )
-
-    last_updated = normalize_timestamp(
-        first_key(item, ["lastUploadTime", "lastUpload", "lastUpdated", "last_updated"])
+    history_last_updated = normalize_timestamp(
+        first_key(history_item, ["lastUploadTime", "lastUpload", "lastUpdated", "last_updated"])
     )
+    last_updated_candidates = [value for value in [price_last_updated, history_last_updated] if value is not None]
+    last_updated = max(last_updated_candidates) if last_updated_candidates else None
 
-    world_id = item.get("worldID") or item.get("worldId")
-    world_name = first_key(item, ["worldName", "world", "world_name"])
+    world_id = (
+        price_item.get("worldID")
+        or price_item.get("worldId")
+        or history_item.get("worldID")
+        or history_item.get("worldId")
+    )
+    world_name = first_key(price_item, ["worldName", "world", "world_name"])
     if not world_name:
-        world_name = first_nested_key(item.get("listings", []), ["worldName", "world_name"])
+        world_name = first_key(history_item, ["worldName", "world", "world_name"])
     if not world_name:
-        world_name = first_nested_key(item.get("recentHistory", []), ["worldName", "world_name"])
+        world_name = first_nested_key(price_item.get("listings", []), ["worldName", "world_name"])
 
     sale_price = first_nested_key(
-        item.get("recentHistory", []),
+        history_entries,
         ["pricePerUnit", "price", "total"],
     )
 
@@ -167,10 +197,23 @@ async def fetch_batch_rows(
     stats: Optional[Counter] = None,
 ):
     try:
-        payload = await fetch_prices(session, limiter, ids, world)
+        prices_payload, history_payload = await asyncio.gather(
+            fetch_prices(session, limiter, ids, world),
+            fetch_history(session, limiter, ids, world),
+        )
+        price_items = {
+            int(item["itemID"]): item
+            for item in extract_items(prices_payload)
+            if isinstance(item, dict) and item.get("itemID")
+        }
+        history_items = {
+            int(item["itemID"]): item
+            for item in extract_items(history_payload)
+            if isinstance(item, dict) and item.get("itemID")
+        }
         rows = []
-        for item in extract_items(payload):
-            row = build_price_row(item, world)
+        for item_id in sorted(set(price_items) | set(history_items)):
+            row = build_price_row(price_items.get(item_id, {}), history_items.get(item_id, {}), world)
             if row is not None:
                 rows.append(row)
         return rows

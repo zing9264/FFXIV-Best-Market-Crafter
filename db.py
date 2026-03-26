@@ -79,6 +79,7 @@ def init_db():
                 sale_price REAL DEFAULT 0,
                 material_total REAL DEFAULT 0,
                 unit_material_cost REAL DEFAULT 0,
+                display_unit_material_cost REAL DEFAULT 0,
                 profit_by_listing REAL DEFAULT 0,
                 profit_by_sale REAL DEFAULT 0,
                 profit_margin_pct REAL DEFAULT 0,
@@ -86,6 +87,18 @@ def init_db():
                 daily_sales REAL DEFAULT 0,
                 updated INTEGER DEFAULT 0,
                 PRIMARY KEY (item_id, world)
+            );
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS collectable_rewards (
+                item_id INTEGER PRIMARY KEY,
+                purple_scrips INTEGER DEFAULT 45,
+                class_job_level INTEGER DEFAULT 0,
+                recipe_level_table INTEGER DEFAULT 0,
+                craft_type INTEGER DEFAULT -1
             );
             """
         )
@@ -161,6 +174,7 @@ def init_db():
             "sale_price",
             "material_total",
             "unit_material_cost",
+            "display_unit_material_cost",
             "profit_by_listing",
             "profit_by_sale",
             "profit_margin_pct",
@@ -180,6 +194,7 @@ def init_db():
                     sale_price REAL DEFAULT 0,
                     material_total REAL DEFAULT 0,
                     unit_material_cost REAL DEFAULT 0,
+                    display_unit_material_cost REAL DEFAULT 0,
                     profit_by_listing REAL DEFAULT 0,
                     profit_by_sale REAL DEFAULT 0,
                     profit_margin_pct REAL DEFAULT 0,
@@ -191,3 +206,4 @@ def init_db():
                 """
             )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_profits_world_listing ON profits(world, profit_by_listing DESC);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_collectable_rewards_craft_type ON collectable_rewards(craft_type);")

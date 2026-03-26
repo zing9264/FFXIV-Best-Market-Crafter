@@ -12,6 +12,7 @@ RECIPE_REFRESH_COOLDOWN_SECONDS = int(os.environ.get("FF14_RECIPE_REFRESH_COOLDO
 FULL_REFRESH_COOLDOWN_SECONDS = int(os.environ.get("FF14_FULL_REFRESH_COOLDOWN_SECONDS", "600"))
 APP_LOG_PATH = os.environ.get("FF14_APP_LOG_PATH", "app.log")
 REFRESH_STATS_PATH = os.environ.get("FF14_REFRESH_STATS_PATH", "refresh_stats.jsonl")
+COLLECTABLE_REWARDS_CSV_PATH = os.environ.get("FF14_COLLECTABLE_REWARDS_CSV_PATH", "data/collectable_rewards.csv")
 
 # Data sources
 UNIVERSALIS_BASE_URL = os.environ.get("UNIVERSALIS_BASE_URL", "https://universalis.app/api/v2")
