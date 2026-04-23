@@ -369,7 +369,8 @@
       <div class="tabs">
         <a class="tab {% if tab == 'lookup' %}active{% endif %}" href="/?tab=lookup">素材查詢</a>
         <a class="tab {% if tab == 'ranking' %}active{% endif %}" href="/?tab=ranking">價差排行</a>
-        <a class="tab {% if tab == 'collectables' %}active{% endif %}" href="/?tab=collectables">收藏品成本</a>
+        <a class="tab {% if tab == 'collectables' and collectable_scrip_type == 'purple' %}active{% endif %}" href="/?tab=collectables&scrip_type=purple">收藏品(紫票)</a>
+        <a class="tab {% if tab == 'collectables' and collectable_scrip_type == 'orange' %}active{% endif %}" href="/?tab=collectables&scrip_type=orange">收藏品(橘票)</a>
       </div>
 
       <div class="grid">
@@ -739,17 +740,18 @@
         </section>
       {% else %}
         <section class="panel">
-          <h2>收藏品成本</h2>
-          <p class="hint">可切換 `全伺服器 / 鳳凰` 物價口徑來計算單件成本與每張紫票成本；另外固定顯示一欄 `單件成本({{ display_world }})` 方便對照。</p>
+          <h2>收藏品成本({{ collectable_scrip_label }})</h2>
+          <p class="hint">可切換 `全伺服器 / 鳳凰` 物價口徑來計算單件成本與{{ collectable_cost_label }}；另外固定顯示一欄 `單件成本({{ display_world }})` 方便對照。</p>
 
           <form method="get" action="/" class="search-form" style="margin: 0 0 16px;">
             <input type="hidden" name="tab" value="collectables" />
+            <input type="hidden" name="scrip_type" value="{{ collectable_scrip_type }}" />
             <div class="actions">
               <label class="hint" style="display: grid; gap: 6px;">
                 排序方向
                 <select name="collectable_sort" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);">
-                  <option value="desc" {% if collectable_sort == "desc" %}selected{% endif %}>每張紫票成本高到低</option>
-                  <option value="asc" {% if collectable_sort == "asc" %}selected{% endif %}>每張紫票成本低到高</option>
+                  <option value="desc" {% if collectable_sort == "desc" %}selected{% endif %}>{{ collectable_cost_label }}高到低</option>
+                  <option value="asc" {% if collectable_sort == "asc" %}selected{% endif %}>{{ collectable_cost_label }}低到高</option>
                 </select>
               </label>
               <label class="hint" style="display: grid; gap: 6px;">
@@ -771,10 +773,10 @@
                   <th>ID</th>
                   <th>職業</th>
                   <th>等級</th>
-                  <th>紫票</th>
+                  <th>{{ collectable_scrip_label }}</th>
                   <th>單件成本({{ price_scope_label }})</th>
                   <th>單件成本({{ display_world }})</th>
-                  <th>每張紫票成本({{ price_scope_label }})</th>
+                  <th>{{ collectable_cost_label }}({{ price_scope_label }})</th>
                 </tr>
               </thead>
               <tbody>
@@ -784,14 +786,14 @@
                     <td class="muted">{{ row.item_id }}</td>
                     <td>{{ row.craft_type_name }}</td>
                     <td>{{ row.class_job_level if row.class_job_level else "-" }}</td>
-                    <td>{{ row.purple_scrips }}</td>
+                    <td>{{ row.scrip_amount }}</td>
                     <td class="money">{{ fmt_num(row.unit_material_cost) }}</td>
                     <td class="money">{{ fmt_num(row.display_unit_material_cost) }}</td>
                     <td class="money">{{ fmt_num(row.cost_per_scrip) }}</td>
                   </tr>
                 {% else %}
                   <tr>
-                    <td colspan="8" class="muted">目前沒有可計算的收藏品資料。先確認 `collectable_rewards.csv` 已匯入且素材價格完整。</td>
+                    <td colspan="8" class="muted">目前沒有可計算的{{ collectable_scrip_label }}收藏品資料。先確認 `collectable_rewards.csv` 已匯入且素材價格完整。</td>
                   </tr>
                 {% endfor %}
               </tbody>

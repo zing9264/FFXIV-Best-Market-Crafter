@@ -596,8 +596,37 @@ def get_recipe_item_ids(conn, item_id: int) -> list[int]:
     return sorted(set(int(value) for value in ids if int(value) > 0))
 
 
-def get_collectable_rows(conn, pricing_world: str, sort_dir: str = "desc"):
+COLLECTABLE_SCRIP_TYPES = {
+    "purple": {
+        "column": "purple_scrips",
+        "label": "紫票",
+        "cost_label": "每張紫票成本",
+    },
+    "orange": {
+        "column": "orange_scrips",
+        "label": "橘票",
+        "cost_label": "每張橘票成本",
+    },
+}
+
+
+def normalize_scrip_type(value: str) -> str:
+    """Clamp an arbitrary string to a supported scrip type, defaulting to purple."""
+    value = (value or "").strip().lower()
+    return value if value in COLLECTABLE_SCRIP_TYPES else "purple"
+
+
+def get_collectable_rows(
+    conn,
+    pricing_world: str,
+    sort_dir: str = "desc",
+    scrip_type: str = "purple",
+):
     order = "DESC" if sort_dir == "desc" else "ASC"
+    scrip_type = normalize_scrip_type(scrip_type)
+    # `column` is whitelisted via COLLECTABLE_SCRIP_TYPES, so direct
+    # interpolation into the SQL below is safe from injection.
+    column = COLLECTABLE_SCRIP_TYPES[scrip_type]["column"]
     cur = conn.cursor()
     cur.execute(
         f"""
@@ -606,14 +635,14 @@ def get_collectable_rows(conn, pricing_world: str, sort_dir: str = "desc"):
             i.name,
             cr.craft_type,
             cr.class_job_level,
-            cr.purple_scrips,
+            cr.{column},
             SUM(ri.qty * fp.min_price) / r.yield AS unit_material_cost,
             CASE
                 WHEN COUNT(pp.item_id) = COUNT(*)
                 THEN SUM(ri.qty * pp.min_price) / r.yield
                 ELSE 0
             END AS display_unit_material_cost,
-            (SUM(ri.qty * fp.min_price) / r.yield) / cr.purple_scrips AS cost_per_scrip
+            (SUM(ri.qty * fp.min_price) / r.yield) / cr.{column} AS cost_per_scrip
         FROM collectable_rewards cr
         JOIN items i ON i.item_id = cr.item_id
         JOIN recipes r ON r.output_item_id = cr.item_id
@@ -626,13 +655,13 @@ def get_collectable_rows(conn, pricing_world: str, sort_dir: str = "desc"):
           ON pp.item_id = ri.ingredient_item_id
          AND pp.world = ?
          AND pp.min_price > 0
-        WHERE cr.purple_scrips > 0
+        WHERE cr.{column} > 0
         GROUP BY
             cr.item_id,
             i.name,
             cr.craft_type,
             cr.class_job_level,
-            cr.purple_scrips,
+            cr.{column},
             r.yield
         HAVING COUNT(*) = (
             SELECT COUNT(*)
@@ -652,7 +681,11 @@ def get_collectable_rows(conn, pricing_world: str, sort_dir: str = "desc"):
                 "craft_type": row[2],
                 "craft_type_name": CRAFT_TYPE_NAMES.get(row[2], f"職業{row[2]}"),
                 "class_job_level": row[3],
-                "purple_scrips": row[4],
+                "scrip_amount": row[4],
+                # Preserve the historical key so existing consumers/tests that
+                # read `purple_scrips` on a purple query keep working.
+                "purple_scrips": row[4] if scrip_type == "purple" else 0,
+                "orange_scrips": row[4] if scrip_type == "orange" else 0,
                 "unit_material_cost": row[5],
                 "display_unit_material_cost": normalize_nonzero_value(row[6]),
                 "cost_per_scrip": row[7],
@@ -808,6 +841,7 @@ def load_dashboard_data():
     collectable_sort = request.args.get("collectable_sort", "desc").strip()
     if collectable_sort not in {"asc", "desc"}:
         collectable_sort = "desc"
+    collectable_scrip_type = normalize_scrip_type(request.args.get("scrip_type", "purple"))
     page_raw = request.args.get("page", "1").strip()
     page = int(page_raw) if page_raw.isdigit() and int(page_raw) > 0 else 1
     per_page = 100
@@ -857,7 +891,12 @@ def load_dashboard_data():
             else []
         )
         collectables = (
-            get_collectable_rows(conn, pricing_world=price_scope_world, sort_dir=collectable_sort)
+            get_collectable_rows(
+                conn,
+                pricing_world=price_scope_world,
+                sort_dir=collectable_sort,
+                scrip_type=collectable_scrip_type,
+            )
             if tab == "collectables"
             else []
         )
@@ -886,6 +925,9 @@ def load_dashboard_data():
         "price_scope_choices": PRICE_SCOPE_CHOICES,
         "collectables": collectables,
         "collectable_sort": collectable_sort,
+        "collectable_scrip_type": collectable_scrip_type,
+        "collectable_scrip_label": COLLECTABLE_SCRIP_TYPES[collectable_scrip_type]["label"],
+        "collectable_cost_label": COLLECTABLE_SCRIP_TYPES[collectable_scrip_type]["cost_label"],
         "min_daily_sales": min_daily_sales,
         "min_price_gap": min_price_gap,
         "min_past_profit": min_past_profit,

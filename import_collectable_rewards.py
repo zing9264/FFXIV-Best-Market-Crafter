@@ -23,7 +23,7 @@ def import_collectable_rewards(csv_path: str = DEFAULT_CSV_PATH) -> int:
     if not path.exists():
         return 0
 
-    rows: list[tuple[int, int, int, int, int]] = []
+    rows: list[tuple[int, int, int, int, int, int]] = []
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
@@ -33,7 +33,10 @@ def import_collectable_rewards(csv_path: str = DEFAULT_CSV_PATH) -> int:
             rows.append(
                 (
                     item_id,
-                    parse_int(row.get("purple_scrips"), default=45),
+                    # Default to 0 rather than the old 45 stub: unknown or
+                    # obsolete levels shouldn't pretend to reward purple scrips.
+                    parse_int(row.get("purple_scrips"), default=0),
+                    parse_int(row.get("orange_scrips"), default=0),
                     parse_int(row.get("class_job_level"), default=0),
                     parse_int(row.get("recipe_level_table"), default=0),
                     parse_int(row.get("craft_type"), default=-1),
@@ -47,8 +50,9 @@ def import_collectable_rewards(csv_path: str = DEFAULT_CSV_PATH) -> int:
         cur.executemany(
             """
             INSERT OR REPLACE INTO collectable_rewards(
-                item_id, purple_scrips, class_job_level, recipe_level_table, craft_type
-            ) VALUES (?, ?, ?, ?, ?);
+                item_id, purple_scrips, orange_scrips,
+                class_job_level, recipe_level_table, craft_type
+            ) VALUES (?, ?, ?, ?, ?, ?);
             """,
             rows,
         )
