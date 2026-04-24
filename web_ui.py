@@ -705,30 +705,61 @@ def get_collectable_rows(
     return rows
 
 
-def get_materia_prices(conn, world: str) -> dict[int, float]:
-    """Return a {materia_item_id: min_price} map for the given world.
+def get_materia_prices(
+    conn, world: str, fallback_world: str | None = None
+) -> dict[int, dict]:
+    """Return per-materia price info, preferring `world` then `fallback_world`.
 
-    Only materia that (a) appear in data/materia_stats.csv AND (b) have a
-    positive min_price in the prices table are returned. The optimizer won't
-    recommend materia we can't price.
+    Shape: {item_id: {"price": float, "source": "鳳凰" | "繁中服" | ...}}.
+    Only returns materia from data/materia_stats.csv that have SOME listing
+    somewhere. When a materia is unlisted on the primary world we surface the
+    region-wide price so the optimizer / picker can still offer it (the player
+    can travel to buy it); the `source` field lets the UI label it.
     """
     materia = load_materia_stats()
     if not materia:
         return {}
     ids = [m.item_id for m in materia]
     placeholders = ",".join(["?"] * len(ids))
+    worlds = [w for w in (world, fallback_world) if w]
+    world_placeholders = ",".join(["?"] * len(worlds))
     cur = conn.cursor()
     cur.execute(
         f"""
-        SELECT item_id, min_price
+        SELECT item_id, world, min_price
         FROM prices
         WHERE item_id IN ({placeholders})
-          AND world = ?
+          AND world IN ({world_placeholders})
           AND min_price > 0;
         """,
-        [*ids, world],
+        [*ids, *worlds],
     )
-    return {row[0]: float(row[1]) for row in cur.fetchall()}
+    by_item: dict[int, dict[str, float]] = {}
+    for iid, w, p in cur.fetchall():
+        by_item.setdefault(int(iid), {})[w] = float(p)
+
+    result: dict[int, dict] = {}
+    for iid, price_by_world in by_item.items():
+        # Prefer the primary world's listing; fall back to the region scope
+        # when the primary has none. Keep whichever one we picked as `source`.
+        if world in price_by_world:
+            result[iid] = {"price": price_by_world[world], "source": world}
+        elif fallback_world and fallback_world in price_by_world:
+            result[iid] = {
+                "price": price_by_world[fallback_world],
+                "source": fallback_world,
+            }
+    return result
+
+
+def get_materia_prices_flat(
+    conn, world: str, fallback_world: str | None = None
+) -> dict[int, float]:
+    """Convenience wrapper for callers (e.g. the ILP) that only need price."""
+    return {
+        iid: info["price"]
+        for iid, info in get_materia_prices(conn, world, fallback_world).items()
+    }
 
 
 def parse_nonnegative_float(value: str, default: float = 0.0) -> float:
@@ -975,7 +1006,9 @@ def load_dashboard_data():
         materia_interactive_payload = None
         if tab == "materia":
             all_materia = load_materia_stats()
-            prices_for_interactive = get_materia_prices(conn, DISPLAY_WORLD)
+            prices_for_interactive = get_materia_prices(
+                conn, DISPLAY_WORLD, fallback_world=LOWEST_WORLD
+            )
             materia_interactive_payload = {
                 "preset_key": materia_preset_key,
                 "targets": materia_target,
@@ -1003,7 +1036,12 @@ def load_dashboard_data():
                         "tier": m.tier,
                         "stat_type": m.stat_type,
                         "stat_value": m.stat_value,
-                        "price": prices_for_interactive.get(m.item_id, 0),
+                        "price": (
+                            prices_for_interactive.get(m.item_id, {}).get("price", 0)
+                        ),
+                        "price_source": (
+                            prices_for_interactive.get(m.item_id, {}).get("source", "")
+                        ),
                     }
                     for m in all_materia
                 ],
@@ -1016,7 +1054,9 @@ def load_dashboard_data():
         if tab == "materia" and materia_run:
             from time import perf_counter
 
-            prices_map = get_materia_prices(conn, DISPLAY_WORLD)
+            prices_map = get_materia_prices_flat(
+                conn, DISPLAY_WORLD, fallback_world=LOWEST_WORLD
+            )
             if not prices_map:
                 materia_error = (
                     "找不到魔晶石的價格資料,請先跑價格更新(全量更新或指定 ID)。"

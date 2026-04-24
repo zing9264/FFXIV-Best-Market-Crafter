@@ -1133,8 +1133,14 @@
                 const selected = m.item_id === currentMid;
                 const wasted = m.stat_value > effStat;
                 const stat_label_map = {craftsmanship: '作業', control: '加工', cp: 'CP'};
+                // Flag prices that come from the region fallback rather than
+                // the display world (e.g. 鳳凰 has no listing, 繁中服 does).
+                const foreign = m.price_source && m.price_source !== '{{ display_world }}';
+                const sourceTag = foreign
+                  ? ` <span class="muted" style="font-size:10px;" title="此價格來自 ${m.price_source},需轉區購買">(${m.price_source})</span>`
+                  : '';
                 html += `<tr style="cursor:pointer; ${selected ? 'background: rgba(120,180,200,0.25);' : ''}" data-mid="${m.item_id}" class="picker-row" title="實際生效 +${effStat} (本件上限吃完後多餘會被截)">
-                  <td style="padding:4px;">${m.name.replace('魔晶石','')}</td>
+                  <td style="padding:4px;">${m.name.replace('魔晶石','')}${sourceTag}</td>
                   <td style="padding:4px; text-align:center; color:${stat_colors[m.stat_type]}">+${m.stat_value}${wasted ? ` <span class="muted">→${effStat}</span>` : ''} ${stat_label_map[m.stat_type]}</td>
                   <td style="padding:4px; text-align:right;">${m.price.toLocaleString()}</td>
                   <td style="padding:4px; text-align:right; font-weight: bold;">${Math.round(exp).toLocaleString()}</td>
