@@ -25,6 +25,17 @@ from config import (
 )
 from db import get_conn, init_db
 from import_collectable_rewards import import_collectable_rewards
+from materia_optimizer import (
+    STAT_KEYS,
+    STAT_LABELS,
+    GearPiece,
+    load_gear_presets,
+    load_materia_stats,
+    load_slot_configs,
+    load_success_rates,
+    optimize,
+    pieces_from_preset,
+)
 from update_prices import update_prices_async, update_prices_for_worlds
 from update_profits import rebuild_profits
 
@@ -596,8 +607,37 @@ def get_recipe_item_ids(conn, item_id: int) -> list[int]:
     return sorted(set(int(value) for value in ids if int(value) > 0))
 
 
-def get_collectable_rows(conn, pricing_world: str, sort_dir: str = "desc"):
+COLLECTABLE_SCRIP_TYPES = {
+    "purple": {
+        "column": "purple_scrips",
+        "label": "紫票",
+        "cost_label": "每張紫票成本",
+    },
+    "orange": {
+        "column": "orange_scrips",
+        "label": "橘票",
+        "cost_label": "每張橘票成本",
+    },
+}
+
+
+def normalize_scrip_type(value: str) -> str:
+    """Clamp an arbitrary string to a supported scrip type, defaulting to purple."""
+    value = (value or "").strip().lower()
+    return value if value in COLLECTABLE_SCRIP_TYPES else "purple"
+
+
+def get_collectable_rows(
+    conn,
+    pricing_world: str,
+    sort_dir: str = "desc",
+    scrip_type: str = "purple",
+):
     order = "DESC" if sort_dir == "desc" else "ASC"
+    scrip_type = normalize_scrip_type(scrip_type)
+    # `column` is whitelisted via COLLECTABLE_SCRIP_TYPES, so direct
+    # interpolation into the SQL below is safe from injection.
+    column = COLLECTABLE_SCRIP_TYPES[scrip_type]["column"]
     cur = conn.cursor()
     cur.execute(
         f"""
@@ -606,14 +646,14 @@ def get_collectable_rows(conn, pricing_world: str, sort_dir: str = "desc"):
             i.name,
             cr.craft_type,
             cr.class_job_level,
-            cr.purple_scrips,
+            cr.{column},
             SUM(ri.qty * fp.min_price) / r.yield AS unit_material_cost,
             CASE
                 WHEN COUNT(pp.item_id) = COUNT(*)
                 THEN SUM(ri.qty * pp.min_price) / r.yield
                 ELSE 0
             END AS display_unit_material_cost,
-            (SUM(ri.qty * fp.min_price) / r.yield) / cr.purple_scrips AS cost_per_scrip
+            (SUM(ri.qty * fp.min_price) / r.yield) / cr.{column} AS cost_per_scrip
         FROM collectable_rewards cr
         JOIN items i ON i.item_id = cr.item_id
         JOIN recipes r ON r.output_item_id = cr.item_id
@@ -626,13 +666,13 @@ def get_collectable_rows(conn, pricing_world: str, sort_dir: str = "desc"):
           ON pp.item_id = ri.ingredient_item_id
          AND pp.world = ?
          AND pp.min_price > 0
-        WHERE cr.purple_scrips > 0
+        WHERE cr.{column} > 0
         GROUP BY
             cr.item_id,
             i.name,
             cr.craft_type,
             cr.class_job_level,
-            cr.purple_scrips,
+            cr.{column},
             r.yield
         HAVING COUNT(*) = (
             SELECT COUNT(*)
@@ -652,13 +692,74 @@ def get_collectable_rows(conn, pricing_world: str, sort_dir: str = "desc"):
                 "craft_type": row[2],
                 "craft_type_name": CRAFT_TYPE_NAMES.get(row[2], f"職業{row[2]}"),
                 "class_job_level": row[3],
-                "purple_scrips": row[4],
+                "scrip_amount": row[4],
+                # Preserve the historical key so existing consumers/tests that
+                # read `purple_scrips` on a purple query keep working.
+                "purple_scrips": row[4] if scrip_type == "purple" else 0,
+                "orange_scrips": row[4] if scrip_type == "orange" else 0,
                 "unit_material_cost": row[5],
                 "display_unit_material_cost": normalize_nonzero_value(row[6]),
                 "cost_per_scrip": row[7],
             }
         )
     return rows
+
+
+def get_materia_prices(
+    conn, world: str, fallback_world: str | None = None
+) -> dict[int, dict]:
+    """Return per-materia price info, preferring `world` then `fallback_world`.
+
+    Shape: {item_id: {"price": float, "source": "鳳凰" | "繁中服" | ...}}.
+    Only returns materia from data/materia_stats.csv that have SOME listing
+    somewhere. When a materia is unlisted on the primary world we surface the
+    region-wide price so the optimizer / picker can still offer it (the player
+    can travel to buy it); the `source` field lets the UI label it.
+    """
+    materia = load_materia_stats()
+    if not materia:
+        return {}
+    ids = [m.item_id for m in materia]
+    placeholders = ",".join(["?"] * len(ids))
+    worlds = [w for w in (world, fallback_world) if w]
+    world_placeholders = ",".join(["?"] * len(worlds))
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT item_id, world, min_price
+        FROM prices
+        WHERE item_id IN ({placeholders})
+          AND world IN ({world_placeholders})
+          AND min_price > 0;
+        """,
+        [*ids, *worlds],
+    )
+    by_item: dict[int, dict[str, float]] = {}
+    for iid, w, p in cur.fetchall():
+        by_item.setdefault(int(iid), {})[w] = float(p)
+
+    result: dict[int, dict] = {}
+    for iid, price_by_world in by_item.items():
+        # Prefer the primary world's listing; fall back to the region scope
+        # when the primary has none. Keep whichever one we picked as `source`.
+        if world in price_by_world:
+            result[iid] = {"price": price_by_world[world], "source": world}
+        elif fallback_world and fallback_world in price_by_world:
+            result[iid] = {
+                "price": price_by_world[fallback_world],
+                "source": fallback_world,
+            }
+    return result
+
+
+def get_materia_prices_flat(
+    conn, world: str, fallback_world: str | None = None
+) -> dict[int, float]:
+    """Convenience wrapper for callers (e.g. the ILP) that only need price."""
+    return {
+        iid: info["price"]
+        for iid, info in get_materia_prices(conn, world, fallback_world).items()
+    }
 
 
 def parse_nonnegative_float(value: str, default: float = 0.0) -> float:
@@ -808,6 +909,31 @@ def load_dashboard_data():
     collectable_sort = request.args.get("collectable_sort", "desc").strip()
     if collectable_sort not in {"asc", "desc"}:
         collectable_sort = "desc"
+    collectable_scrip_type = normalize_scrip_type(request.args.get("scrip_type", "purple"))
+
+    # ---- Materia optimizer inputs (only consumed when tab == "materia") ----
+    materia_preset_key = request.args.get("materia_preset", "crp_745_explorer").strip()
+    materia_target = {
+        "craftsmanship": int(request.args.get("target_craft", "5386") or 0),
+        "control": int(request.args.get("target_ctrl", "5246") or 0),
+        "cp": int(request.args.get("target_cp", "628") or 0),
+    }
+    materia_locked_pieces: dict[str, dict[str, int]] = {}
+    for piece_key in (
+        "main_hand", "off_hand", "head", "body", "hands", "legs", "feet",
+        "earrings", "necklace", "bracelet", "ring_1", "ring_2",
+    ):
+        if request.args.get(f"lock_{piece_key}"):
+            materia_locked_pieces[piece_key] = {
+                "craftsmanship": int(request.args.get(f"lock_{piece_key}_craft", "0") or 0),
+                "control": int(request.args.get(f"lock_{piece_key}_ctrl", "0") or 0),
+                "cp": int(request.args.get(f"lock_{piece_key}_cp", "0") or 0),
+            }
+    materia_run = request.args.get("materia_run", "").strip() == "1"
+    # Hard-cap top_k: each extra iteration is a full CBC re-solve with a
+    # fresh no-good cut and peaks memory further. K=10 was observed to OOM
+    # / hang on a 16 GB machine, so clamp to 5 and default to 3.
+    materia_top_k = max(1, min(5, int(request.args.get("materia_top_k", "3") or 3)))
     page_raw = request.args.get("page", "1").strip()
     page = int(page_raw) if page_raw.isdigit() and int(page_raw) > 0 else 1
     per_page = 100
@@ -857,10 +983,138 @@ def load_dashboard_data():
             else []
         )
         collectables = (
-            get_collectable_rows(conn, pricing_world=price_scope_world, sort_dir=collectable_sort)
+            get_collectable_rows(
+                conn,
+                pricing_world=price_scope_world,
+                sort_dir=collectable_sort,
+                scrip_type=collectable_scrip_type,
+            )
             if tab == "collectables"
             else []
         )
+
+        # Materia optimizer tab — only run the solver when the user explicitly
+        # submits the form (materia_run=1). Prices come from the DB.
+        materia_solutions_payload = {"solutions": []}
+        materia_presets = load_gear_presets()
+        materia_preset = materia_presets.get(
+            materia_preset_key, next(iter(materia_presets.values()))
+        )
+        materia_slot_configs = load_slot_configs()
+
+        # Payload for the interactive manual-meld builder (client-side JS).
+        materia_interactive_payload = None
+        if tab == "materia":
+            all_materia = load_materia_stats()
+            prices_for_interactive = get_materia_prices(
+                conn, DISPLAY_WORLD, fallback_world=LOWEST_WORLD
+            )
+            materia_interactive_payload = {
+                "preset_key": materia_preset_key,
+                "targets": materia_target,
+                "base_stats": materia_preset["base_stats_total"],
+                "pieces": [
+                    {
+                        "index": idx,
+                        "slot_key": p["slot_key"],
+                        "label": p["label"],
+                        "base": p["base"],
+                        "cap": p["cap"],
+                        "headroom": p["headroom"],
+                        "slot_config": {
+                            "safe_sockets": materia_slot_configs[p["slot_key"]].safe_sockets,
+                            "total_sockets": materia_slot_configs[p["slot_key"]].total_sockets,
+                        },
+                    }
+                    for idx, p in enumerate(materia_preset["pieces"])
+                ],
+                "materia": [
+                    {
+                        "item_id": m.item_id,
+                        "name": m.name,
+                        "series": m.series,
+                        "tier": m.tier,
+                        "stat_type": m.stat_type,
+                        "stat_value": m.stat_value,
+                        "price": (
+                            prices_for_interactive.get(m.item_id, {}).get("price", 0)
+                        ),
+                        "price_source": (
+                            prices_for_interactive.get(m.item_id, {}).get("source", "")
+                        ),
+                    }
+                    for m in all_materia
+                ],
+                "success_rates": load_success_rates(),
+                "current_max_tier": 12,
+            }
+        materia_results: list = []
+        materia_error: str | None = None
+        materia_solve_seconds: float = 0.0
+        if tab == "materia" and materia_run:
+            from time import perf_counter
+
+            prices_map = get_materia_prices_flat(
+                conn, DISPLAY_WORLD, fallback_world=LOWEST_WORLD
+            )
+            if not prices_map:
+                materia_error = (
+                    "找不到魔晶石的價格資料,請先跑價格更新(全量更新或指定 ID)。"
+                )
+            else:
+                # Build GearPiece objects from the preset, overlaying any
+                # locked-piece inputs coming from the form.
+                piece_objs = []
+                for piece_info in materia_preset["pieces"]:
+                    locked = piece_info["slot_key"] in materia_locked_pieces
+                    piece_objs.append(
+                        GearPiece(
+                            slot_key=piece_info["slot_key"],
+                            label=piece_info["label"],
+                            headroom=dict(piece_info["headroom"]),
+                            locked=locked,
+                            locked_contribution=(
+                                materia_locked_pieces[piece_info["slot_key"]]
+                                if locked
+                                else {k: 0 for k in STAT_KEYS}
+                            ),
+                        )
+                    )
+                try:
+                    t0 = perf_counter()
+                    materia_results = optimize(
+                        targets=materia_target,
+                        base_stats=materia_preset["base_stats_total"],
+                        pieces=piece_objs,
+                        prices=prices_map,
+                        top_k=materia_top_k,
+                        solver_timeout_seconds=12,
+                    )
+                    materia_solve_seconds = perf_counter() - t0
+                except ValueError as exc:
+                    materia_error = str(exc)
+
+        # Build a JSON-serialisable bundle of ILP solutions for the
+        # client-side "apply solution" buttons. Done here in Python so the
+        # template doesn't have to wrestle with nested comprehensions.
+        materia_solutions_payload = {
+            "solutions": [
+                {
+                    "assignments": [
+                        {
+                            "piece_index": a["piece_index"],
+                            "socket_index": a["socket_index"],
+                            "materia_id": (
+                                a["materia"]["item_id"] if a.get("materia") else None
+                            ),
+                            "locked": a.get("locked", False),
+                        }
+                        for a in r.assignments
+                    ]
+                }
+                for r in materia_results
+            ]
+        }
 
     total_pages = max(1, (total_profit_rows + per_page - 1) // per_page) if tab == "ranking" else 1
 
@@ -886,6 +1140,24 @@ def load_dashboard_data():
         "price_scope_choices": PRICE_SCOPE_CHOICES,
         "collectables": collectables,
         "collectable_sort": collectable_sort,
+        "collectable_scrip_type": collectable_scrip_type,
+        "collectable_scrip_label": COLLECTABLE_SCRIP_TYPES[collectable_scrip_type]["label"],
+        "collectable_cost_label": COLLECTABLE_SCRIP_TYPES[collectable_scrip_type]["cost_label"],
+        # Materia optimizer
+        "materia_presets": materia_presets,
+        "materia_preset": materia_preset,
+        "materia_preset_key": materia_preset_key,
+        "materia_target": materia_target,
+        "materia_locked_pieces": materia_locked_pieces,
+        "materia_top_k": materia_top_k,
+        "materia_run": materia_run,
+        "materia_slot_configs": materia_slot_configs,
+        "materia_results": materia_results,
+        "materia_error": materia_error,
+        "materia_solve_seconds": materia_solve_seconds,
+        "materia_stat_labels": STAT_LABELS,
+        "materia_interactive_payload": materia_interactive_payload,
+        "materia_solutions_payload": materia_solutions_payload if tab == "materia" else {"solutions": []},
         "min_daily_sales": min_daily_sales,
         "min_price_gap": min_price_gap,
         "min_past_profit": min_past_profit,

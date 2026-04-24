@@ -65,7 +65,8 @@ def seed_db(db_path: str) -> None:
 
         CREATE TABLE collectable_rewards (
             item_id INTEGER PRIMARY KEY,
-            purple_scrips INTEGER DEFAULT 45,
+            purple_scrips INTEGER DEFAULT 0,
+            orange_scrips INTEGER DEFAULT 0,
             class_job_level INTEGER DEFAULT 0,
             recipe_level_table INTEGER DEFAULT 0,
             craft_type INTEGER DEFAULT -1
@@ -144,8 +145,8 @@ def seed_db(db_path: str) -> None:
     )
     cur.execute(
         """
-        INSERT INTO collectable_rewards(item_id, purple_scrips, class_job_level, recipe_level_table, craft_type)
-        VALUES(500, 95, 90, 999, 0);
+        INSERT INTO collectable_rewards(item_id, purple_scrips, orange_scrips, class_job_level, recipe_level_table, craft_type)
+        VALUES(500, 95, 0, 90, 999, 0);
         """
     )
     conn.commit()
@@ -162,8 +163,8 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
         cls.collectable_rewards_path = os.path.join(cls.temp_dir.name, "collectable_rewards.csv")
         seed_db(cls.db_path)
         with open(cls.collectable_rewards_path, "w", encoding="utf-8", newline="") as handle:
-            handle.write("item_id,name,purple_scrips,class_job_level,recipe_level_table,craft_type\n")
-            handle.write("500,收藏用測試品,95,90,999,0\n")
+            handle.write("item_id,name,purple_scrips,orange_scrips,class_job_level,recipe_level_table,craft_type\n")
+            handle.write("500,收藏用測試品,95,0,90,999,0\n")
 
         os.environ["FF14_DB_PATH"] = cls.db_path
         os.environ["FF14_WORLD"] = "繁中服"
@@ -331,6 +332,33 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("每張紫票成本(鳳凰)", body)
+
+    def test_collectables_page_defaults_to_purple_scrip(self):
+        """The seeded fixture only has a purple-scrip reward (lv90 → 95 purple),
+        so the default view (which equals `scrip_type=purple`) should render the
+        purple cost label and include the purple-scrip reward value."""
+        client = self.app.test_client()
+        response = client.get("/?tab=collectables")
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("收藏品成本(紫票)", body)
+        # The seeded reward amount should appear in the scrip amount column.
+        self.assertIn(">95<", body)
+
+    def test_collectables_page_orange_scope_filters_purple_only_data(self):
+        """With only a purple-scrip fixture loaded, asking for the orange view
+        should return a well-formed page that reports no matching rows — not
+        400, not a stale purple label. This guards against the old bug where
+        lv100 items silently showed up with a stub purple value of 45."""
+        client = self.app.test_client()
+        response = client.get("/?tab=collectables&scrip_type=orange")
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("收藏品成本(橘票)", body)
+        self.assertIn("每張橘票成本", body)
+        self.assertIn("目前沒有可計算的橘票收藏品資料", body)
 
     def test_refresh_profits_redirects_with_count(self):
         client = self.app.test_client()

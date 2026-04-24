@@ -1,0 +1,13 @@
+slot_key,slot_label,safe_sockets,total_sockets
+main_hand,主手,1,5
+off_hand,副手,1,5
+head,頭,2,5
+body,身,2,5
+hands,手,2,5
+legs,腿,2,5
+feet,腳,2,5
+earrings,耳,1,5
+necklace,項,1,5
+bracelet,手鐲,1,5
+ring_1,戒指1,1,5
+ring_2,戒指2,1,5

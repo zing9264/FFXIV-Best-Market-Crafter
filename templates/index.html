@@ -369,7 +369,9 @@
       <div class="tabs">
         <a class="tab {% if tab == 'lookup' %}active{% endif %}" href="/?tab=lookup">素材查詢</a>
         <a class="tab {% if tab == 'ranking' %}active{% endif %}" href="/?tab=ranking">價差排行</a>
-        <a class="tab {% if tab == 'collectables' %}active{% endif %}" href="/?tab=collectables">收藏品成本</a>
+        <a class="tab {% if tab == 'collectables' and collectable_scrip_type == 'purple' %}active{% endif %}" href="/?tab=collectables&scrip_type=purple">收藏品(紫票)</a>
+        <a class="tab {% if tab == 'collectables' and collectable_scrip_type == 'orange' %}active{% endif %}" href="/?tab=collectables&scrip_type=orange">收藏品(橘票)</a>
+        <a class="tab {% if tab == 'materia' %}active{% endif %}" href="/?tab=materia">魔晶石優化</a>
       </div>
 
       <div class="grid">
@@ -737,19 +739,486 @@
             {% endif %}
           </div>
         </section>
+      {% elif tab == "materia" %}
+        <section class="panel">
+          <h2>魔晶石鑲嵌優化</h2>
+          <p class="hint">
+            輸入目標三圍,選一個裝備 preset,表單送出後會用 ILP solver
+            算出期望成本最低的鑲嵌組合。成本依市場價與每個孔位的成功率加權
+            (安全孔 100%、第 1~4 個非安全孔 17/10/7/5%)。
+          </p>
+
+          <form method="get" action="/" id="materia-form" style="display: grid; gap: 14px; margin-bottom: 16px;">
+            <input type="hidden" name="tab" value="materia" />
+            <input type="hidden" name="materia_run" value="1" />
+
+            <div class="actions" style="gap: 12px;">
+              <label class="hint" style="display:grid; gap:4px;">
+                目標 作業精度
+                <input type="number" name="target_craft" value="{{ materia_target.craftsmanship }}" style="width: 110px; padding:8px;" />
+              </label>
+              <label class="hint" style="display:grid; gap:4px;">
+                目標 加工精度
+                <input type="number" name="target_ctrl" value="{{ materia_target.control }}" style="width: 110px; padding:8px;" />
+              </label>
+              <label class="hint" style="display:grid; gap:4px;">
+                目標 制作力
+                <input type="number" name="target_cp" value="{{ materia_target.cp }}" style="width: 110px; padding:8px;" />
+              </label>
+              <label class="hint" style="display:grid; gap:4px;">
+                配裝 preset
+                <select name="materia_preset" style="padding:8px; border:1px solid var(--line); border-radius:12px; background: var(--panel-strong);">
+                  {% for key, p in materia_presets.items() %}
+                  <option value="{{ key }}" {% if key == materia_preset_key %}selected{% endif %}>{{ p.label }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label class="hint" style="display:grid; gap:4px;">
+                解的數量 (top K)
+                <select name="materia_top_k" style="padding:8px; border:1px solid var(--line); border-radius:12px; background: var(--panel-strong);">
+                  {% for k in [1,3,5] %}
+                  <option value="{{ k }}" {% if k == materia_top_k %}selected{% endif %}>{{ k }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <button class="btn" type="submit">計算</button>
+            </div>
+
+            <p class="hint" style="margin: 0; font-size: 11px;">
+              提示:要把某件裝備從自動計算中排除(保持現有鑲嵌不動),
+              請在下方手動模擬器那件裝旁的勾選方塊解除勾選。
+            </p>
+          </form>
+
+          {% if materia_error %}
+          <p class="hint" style="color: #c0392b;">⚠️ {{ materia_error }}</p>
+          {% endif %}
+
+          {% if materia_run and not materia_error %}
+          <p class="hint">
+            自動計算完成（耗時 {{ '%.1f' % materia_solve_seconds }}s,{{ materia_results|length }} 個方案)。
+            點下方任一「套用方案」按鈕把該方案填入下方的手動模擬器。
+          </p>
+
+          <div id="solution-buttons" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+            {% for r in materia_results %}
+            <button type="button" class="btn solution-apply-btn" data-solution-index="{{ loop.index0 }}"
+                    style="padding: 10px 14px; border-radius: 10px; font-size: 13px; text-align: left;">
+              <div style="font-weight: bold;">套用方案 #{{ loop.index }}</div>
+              <div style="font-size: 11px; margin-top: 2px;">
+                期望 {{ '{:,.0f}'.format(r.total_cost) }} gil
+                · 作業 {{ r.total_stats.craftsmanship }}/{{ r.target_stats.craftsmanship }}
+                · 加工 {{ r.total_stats.control }}/{{ r.target_stats.control }}
+                · CP {{ r.total_stats.cp }}/{{ r.target_stats.cp }}
+              </div>
+            </button>
+            {% else %}
+            <p class="hint">目前沒有可行方案。請檢查目標是否過高、裝備 cap 是否不足。</p>
+            {% endfor %}
+          </div>
+
+          <script id="solution-data" type="application/json">{{ materia_solutions_payload | tojson | safe }}</script>
+          {% endif %}
+
+          {% if materia_interactive_payload %}
+          <section class="panel" id="manual-meld" style="margin-top: 20px; background: var(--panel-strong);"
+                   data-payload='{{ materia_interactive_payload | tojson | safe }}'>
+            <h3 style="margin: 0 0 10px;">手動鑲嵌模擬器</h3>
+            <p class="hint">左側點任一孔位,右側即顯示該孔位所有可用魔晶石(依期望成本排序)。底部即時統計三圍與總成本。</p>
+            <div style="display: grid; grid-template-columns: 1.6fr 1fr; gap: 14px;">
+              <div id="manual-grid"></div>
+              <div id="manual-picker" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px; min-height: 200px; align-self: start; position: sticky; top: 12px;">
+                <p class="hint" style="margin:0;">點選左邊的孔位以查看魔晶石選項。</p>
+              </div>
+            </div>
+            <div id="manual-totals" class="hint" style="margin-top: 12px; padding: 12px; border-top: 1px dashed var(--line);">計算中…</div>
+          </section>
+
+          <script>
+          (function(){
+            const root = document.getElementById('manual-meld');
+            if (!root) return;
+            const payload = JSON.parse(root.dataset.payload);
+            const stat_labels = {craftsmanship: '作業', control: '加工', cp: 'CP'};
+            const stat_colors = {craftsmanship: '#b65a3c', control: '#2d7a8e', cp: '#8e4caf'};
+            // Local state: per-piece, per-socket materia item_id (or null);
+            // whether the piece participates in the running totals; and
+            // which socket is currently selected in the picker panel.
+            const state = payload.pieces.map(p => new Array(p.slot_config.total_sockets).fill(null));
+            const included = payload.pieces.map(() => true);
+            let activeSocket = null; // [pieceIdx, socketIdx] or null
+
+            function socketPosition(piece, socketIdx) {
+              const safe = piece.slot_config.safe_sockets;
+              if (socketIdx < safe) return 'safe';
+              return 'overmeld_' + (socketIdx - safe + 1);
+            }
+            function allowedAtSocket(piece, socketIdx, materia) {
+              // Meld rules (current patch):
+              //   safe slots       — any tier
+              //   overmeld_1       — any tier (even or odd, up to current max)
+              //   overmeld_2..4    — odd tiers only (1,3,5,7,9,11)
+              const pos = socketPosition(piece, socketIdx);
+              if (pos === 'safe' || pos === 'overmeld_1') return true;
+              return materia.tier % 2 === 1;
+            }
+            function rateAt(pos) {
+              if (pos === 'safe') return 1.0;
+              return payload.success_rates[pos] ?? 0.01;
+            }
+
+            function render() {
+              const grid = document.getElementById('manual-grid');
+              grid.innerHTML = '';
+              const table = document.createElement('table');
+              table.style.cssText = 'width:100%; border-collapse: collapse;';
+              const thead = document.createElement('thead');
+              thead.innerHTML = '<tr><th style="padding:6px; width:30px;" title="納入統計">✓</th><th style="text-align:left; padding:6px;">裝備</th><th style="text-align:left; padding:6px;">孔位</th><th style="padding:6px;">該件 作業</th><th style="padding:6px;">該件 加工</th><th style="padding:6px;">該件 CP</th><th style="padding:6px;">期望成本</th></tr>';
+              table.appendChild(thead);
+              const tbody = document.createElement('tbody');
+
+              payload.pieces.forEach((piece, pIdx) => {
+                const tr = document.createElement('tr');
+                tr.style.borderTop = '1px solid rgba(127,127,127,0.15)';
+                if (!included[pIdx]) tr.style.opacity = '0.35';
+
+                const tdInc = document.createElement('td');
+                tdInc.style.padding = '6px';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.checked = included[pIdx];
+                cb.title = '是否納入統計';
+                cb.addEventListener('change', e => {
+                  included[pIdx] = e.target.checked;
+                  render();
+                  updateTotals();
+                });
+                tdInc.appendChild(cb);
+                tr.appendChild(tdInc);
+
+                const tdLabel = document.createElement('td');
+                tdLabel.style.padding = '6px';
+                tdLabel.textContent = piece.label;
+                tr.appendChild(tdLabel);
+
+                const tdSockets = document.createElement('td');
+                tdSockets.style.padding = '6px';
+                const total = piece.slot_config.total_sockets;
+                for (let sIdx = 0; sIdx < total; sIdx++) {
+                  const pos = socketPosition(piece, sIdx);
+                  const mid = state[pIdx][sIdx];
+                  const m = mid ? payload.materia.find(x => x.item_id === mid) : null;
+                  const chip = document.createElement('button');
+                  chip.type = 'button';
+                  chip.dataset.piece = pIdx;
+                  chip.dataset.socket = sIdx;
+                  const isActive = activeSocket && activeSocket[0] === pIdx && activeSocket[1] === sIdx;
+                  chip.style.cssText = `margin:2px; padding:4px 8px; font-size:11px; min-width:60px; border-radius: 8px; border: 1px solid ${isActive ? '#3d7dac' : 'var(--line)'}; background: ${m ? 'rgba(120,180,200,0.15)' : 'var(--panel)'}; cursor: pointer; ${isActive ? 'box-shadow: 0 0 0 2px #3d7dac88;' : ''}`;
+                  chip.title = `${piece.label} · ${pos === 'safe' ? '安全孔' : pos} · 成功率 ${(rateAt(pos)*100).toFixed(0)}%`;
+                  chip.textContent = m ? m.name.replace('魔晶石','').replace('半','(半)') : (pos === 'safe' ? '安' : pos.replace('overmeld_','OM'));
+                  chip.addEventListener('click', () => {
+                    activeSocket = [pIdx, sIdx];
+                    render();
+                    renderPicker();
+                  });
+                  tdSockets.appendChild(chip);
+                }
+                tr.appendChild(tdSockets);
+
+                // Per-piece stat accumulation
+                const pieceStats = {craftsmanship:0, control:0, cp:0};
+                let pieceCost = 0;
+                state[pIdx].forEach((mid, sIdx) => {
+                  if (!mid) return;
+                  const m = payload.materia.find(x => x.item_id === mid);
+                  if (!m) return;
+                  pieceStats[m.stat_type] += m.stat_value;
+                  pieceCost += m.price / Math.max(rateAt(socketPosition(piece, sIdx)), 1e-6);
+                });
+
+                ['craftsmanship','control','cp'].forEach(stat => {
+                  const td = document.createElement('td');
+                  td.style.cssText = 'padding:6px; text-align:right; font-variant-numeric: tabular-nums;';
+                  const base = piece.base[stat];
+                  const cap = piece.cap[stat];
+                  const total = Math.min(base + pieceStats[stat], cap);
+                  const over = (base + pieceStats[stat]) > cap;
+                  td.innerHTML = `<span style="${over ? 'color:#c0392b; font-weight:bold;' : ''}">${total}</span><span class="muted">/${cap}${over ? ' ⚠️' : ''}</span>`;
+                  tr.appendChild(td);
+                });
+
+                const tdCost = document.createElement('td');
+                tdCost.style.cssText = 'padding:6px; text-align:right;';
+                tdCost.textContent = pieceCost > 0 ? Math.round(pieceCost).toLocaleString() : '—';
+                tr.appendChild(tdCost);
+
+                tbody.appendChild(tr);
+              });
+              table.appendChild(tbody);
+              grid.appendChild(table);
+            }
+
+            function updateTotals() {
+              // All pieces contribute to stats regardless of checkbox — the
+              // checkbox only decides whether the NEXT auto-solve may re-meld
+              // the piece. Cost-wise, only currently-chosen materia on any
+              // piece counts (locked pieces' materia is a sunk cost for the
+              // player's planning, not a recurring investment).
+              const totals = {craftsmanship:0, control:0, cp:0};
+              let cost = 0;
+              payload.pieces.forEach((piece, pIdx) => {
+                const pieceStats = {craftsmanship:0, control:0, cp:0};
+                state[pIdx].forEach((mid, sIdx) => {
+                  if (!mid) return;
+                  const m = payload.materia.find(x => x.item_id === mid);
+                  if (!m) return;
+                  pieceStats[m.stat_type] += m.stat_value;
+                  // Only count materia cost for pieces that participate in
+                  // optimisation; pre-melded locked pieces are already paid for.
+                  if (included[pIdx]) {
+                    cost += m.price / Math.max(rateAt(socketPosition(piece, sIdx)), 1e-6);
+                  }
+                });
+                ['craftsmanship','control','cp'].forEach(stat => {
+                  const eff = Math.min(piece.base[stat] + pieceStats[stat], piece.cap[stat]);
+                  totals[stat] += eff - piece.base[stat]; // materia contribution (capped to cap)
+                });
+              });
+              const finals = {
+                craftsmanship: payload.base_stats.craftsmanship + totals.craftsmanship,
+                control: payload.base_stats.control + totals.control,
+                cp: payload.base_stats.cp + totals.cp,
+              };
+              const target = payload.targets;
+              const out = document.getElementById('manual-totals');
+              const fmt = (label, got, tgt, color) => {
+                const diff = got - tgt;
+                const meet = diff >= 0;
+                return `<span style="color:${color}; font-weight:bold;">${label}</span>: <span style="font-variant-numeric: tabular-nums; ${meet ? '' : 'color:#c0392b;'}">${got}</span> / ${tgt} <span class="muted">(${meet ? '+' : ''}${diff})</span>`;
+              };
+
+              // Per-materia expected purchase count: raw sockets counted
+              // 1/success_rate each (so a tier-12 in 5%-rate slot contributes
+              // 20 expected purchases). Only pieces that are part of the
+              // optimisation (checked) count toward the shopping list — the
+              // player already owns the materia on unchecked pieces.
+              const shopList = {};
+              payload.pieces.forEach((piece, pIdx) => {
+                if (!included[pIdx]) return;
+                state[pIdx].forEach((mid, sIdx) => {
+                  if (!mid) return;
+                  const m = payload.materia.find(x => x.item_id === mid);
+                  if (!m) return;
+                  const rate = rateAt(socketPosition(piece, sIdx));
+                  const expected = 1 / Math.max(rate, 1e-6);
+                  if (!shopList[m.item_id]) shopList[m.item_id] = {m, count: 0};
+                  shopList[m.item_id].count += expected;
+                });
+              });
+              const shopEntries = Object.values(shopList).sort(
+                (a, b) => b.count * b.m.price - a.count * a.m.price
+              );
+              let shopHtml = '';
+              if (shopEntries.length) {
+                shopHtml = '<div style="margin-top: 10px; font-size: 11px;"><strong>期望購買量</strong> (需抓多少顆才鑲到滿):<br/>';
+                shopHtml += shopEntries.map(({m, count}) => {
+                  const exp = count * m.price;
+                  const short = m.name.replace('魔晶石','');
+                  return `<span style="display:inline-block; margin: 2px 6px 2px 0; padding: 2px 6px; border-radius: 6px; background: rgba(120,180,200,0.12);" title="${m.price.toLocaleString()}g × ${count.toFixed(1)} 顆">${count.toFixed(1)} × ${short} = ${Math.round(exp).toLocaleString()}g</span>`;
+                }).join('');
+                shopHtml += '</div>';
+              }
+
+              out.innerHTML = `
+                ${fmt('作業', finals.craftsmanship, target.craftsmanship, stat_colors.craftsmanship)}
+                &nbsp;&nbsp;|&nbsp;&nbsp;
+                ${fmt('加工', finals.control, target.control, stat_colors.control)}
+                &nbsp;&nbsp;|&nbsp;&nbsp;
+                ${fmt('CP', finals.cp, target.cp, stat_colors.cp)}
+                &nbsp;&nbsp;|&nbsp;&nbsp;
+                <strong>期望總成本: ${Math.round(cost).toLocaleString()} gil</strong>
+                ${shopHtml}
+              `;
+            }
+
+            // Wire up the "apply ILP solution" buttons. Each button loads an
+            // ILP-recommended assignment back into the manual-meld state so
+            // the user can inspect or tweak it piece by piece.
+            const solutionScript = document.getElementById('solution-data');
+            if (solutionScript) {
+              let solutionData = null;
+              try { solutionData = JSON.parse(solutionScript.textContent); } catch (e) {}
+              if (solutionData && solutionData.solutions) {
+                document.querySelectorAll('.solution-apply-btn').forEach(btn => {
+                  btn.addEventListener('click', e => {
+                    const idx = parseInt(btn.dataset.solutionIndex, 10);
+                    const sol = solutionData.solutions[idx];
+                    if (!sol) return;
+                    // Only clear sockets on pieces that participated in the
+                    // auto-solve (checked rows). Unchecked pieces hold the
+                    // player's manual placement and were passed to the ILP
+                    // as locked contributions, not re-melded — wiping them
+                    // here would throw away the meld the player already paid
+                    // for and made the solver satisfy targets around.
+                    for (let p = 0; p < state.length; p++) {
+                      if (!included[p]) continue;
+                      state[p] = new Array(state[p].length).fill(null);
+                    }
+                    sol.assignments.forEach(a => {
+                      if (!a.materia_id || a.socket_index < 0) return;
+                      // Defensive: ignore backend assignments pointing at a
+                      // piece the user has since unchecked (shouldn't happen
+                      // on the same submit but protects against stale data).
+                      if (!included[a.piece_index]) return;
+                      state[a.piece_index][a.socket_index] = a.materia_id;
+                    });
+                    render();
+                    updateTotals();
+                    // Scroll the manual panel into view for immediate feedback.
+                    document.getElementById('manual-meld').scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  });
+                });
+              }
+            }
+
+            function renderPicker() {
+              const out = document.getElementById('manual-picker');
+              if (!activeSocket) {
+                out.innerHTML = '<p class="hint" style="margin:0;">點選左邊的孔位以查看魔晶石選項。</p>';
+                return;
+              }
+              const [pIdx, sIdx] = activeSocket;
+              const piece = payload.pieces[pIdx];
+              const pos = socketPosition(piece, sIdx);
+              const rate = rateAt(pos);
+              const currentMid = state[pIdx][sIdx];
+
+              // Per-piece headroom: cap − (base + already-applied materia for this stat)
+              const alreadyStats = {craftsmanship:0, control:0, cp:0};
+              state[pIdx].forEach((mid, i) => {
+                if (!mid || i === sIdx) return;
+                const m = payload.materia.find(x => x.item_id === mid);
+                if (m) alreadyStats[m.stat_type] += m.stat_value;
+              });
+
+              const options = payload.materia
+                .filter(m => m.price > 0 && allowedAtSocket(piece, sIdx, m))
+                .map(m => {
+                  const exp = m.price / Math.max(rate, 1e-6);
+                  const effStat = Math.max(0, Math.min(
+                    m.stat_value,
+                    piece.cap[m.stat_type] - piece.base[m.stat_type] - alreadyStats[m.stat_type]
+                  ));
+                  return {m, exp, effStat};
+                })
+                .sort((a, b) => a.exp - b.exp);
+
+              let html = `<div style="margin-bottom:8px;">
+                <strong>${piece.label}</strong> · 孔位 ${sIdx + 1}
+                <span class="muted">(${pos === 'safe' ? '安全孔' : pos} · 成功率 ${(rate*100).toFixed(0)}%)</span>
+              </div>`;
+              html += '<table style="width:100%; font-size:11px; border-collapse: collapse;"><thead><tr>';
+              html += '<th style="text-align:left; padding:4px;">魔晶石</th>';
+              html += '<th style="padding:4px;">屬性</th>';
+              html += '<th style="text-align:right; padding:4px;">原價</th>';
+              html += '<th style="text-align:right; padding:4px;">期望成本</th>';
+              html += '</tr></thead><tbody>';
+
+              const clearRow = `<tr style="cursor:pointer; ${!currentMid ? 'background: rgba(120,180,200,0.15);' : ''}" data-mid="" class="picker-row">
+                <td colspan="4" style="padding:4px; text-align:center; font-style:italic;" class="muted">(清空)</td>
+              </tr>`;
+              html += clearRow;
+
+              options.forEach(({m, exp, effStat}) => {
+                const selected = m.item_id === currentMid;
+                const wasted = m.stat_value > effStat;
+                const stat_label_map = {craftsmanship: '作業', control: '加工', cp: 'CP'};
+                // Flag prices that come from the region fallback rather than
+                // the display world (e.g. 鳳凰 has no listing, 繁中服 does).
+                const foreign = m.price_source && m.price_source !== '{{ display_world }}';
+                const sourceTag = foreign
+                  ? ` <span class="muted" style="font-size:10px;" title="此價格來自 ${m.price_source},需轉區購買">(${m.price_source})</span>`
+                  : '';
+                html += `<tr style="cursor:pointer; ${selected ? 'background: rgba(120,180,200,0.25);' : ''}" data-mid="${m.item_id}" class="picker-row" title="實際生效 +${effStat} (本件上限吃完後多餘會被截)">
+                  <td style="padding:4px;">${m.name.replace('魔晶石','')}${sourceTag}</td>
+                  <td style="padding:4px; text-align:center; color:${stat_colors[m.stat_type]}">+${m.stat_value}${wasted ? ` <span class="muted">→${effStat}</span>` : ''} ${stat_label_map[m.stat_type]}</td>
+                  <td style="padding:4px; text-align:right;">${m.price.toLocaleString()}</td>
+                  <td style="padding:4px; text-align:right; font-weight: bold;">${Math.round(exp).toLocaleString()}</td>
+                </tr>`;
+              });
+              html += '</tbody></table>';
+              out.innerHTML = html;
+
+              out.querySelectorAll('.picker-row').forEach(tr => {
+                tr.addEventListener('click', () => {
+                  const v = tr.dataset.mid;
+                  state[pIdx][sIdx] = v ? parseInt(v, 10) : null;
+                  render();
+                  renderPicker();
+                  updateTotals();
+                });
+              });
+            }
+
+            // Before the auto-solve form submits, translate any unchecked
+            // pieces into the form's lock_* fields so the ILP treats them as
+            // fixed contributions. Unchecked + no materia = excluded entirely.
+            const materiaForm = document.getElementById('materia-form');
+            if (materiaForm) {
+              materiaForm.addEventListener('submit', () => {
+                // Strip previously-injected sync inputs so re-submits stay clean.
+                materiaForm.querySelectorAll('[data-auto-lock]').forEach(n => n.remove());
+                payload.pieces.forEach((piece, pIdx) => {
+                  if (included[pIdx]) return;
+                  const stats = {craftsmanship:0, control:0, cp:0};
+                  state[pIdx].forEach(mid => {
+                    if (!mid) return;
+                    const m = payload.materia.find(x => x.item_id === mid);
+                    if (m) stats[m.stat_type] += m.stat_value;
+                  });
+                  // Clamp locked contribution to the piece's headroom so we
+                  // don't pretend it grants more stat than the cap allows.
+                  ['craftsmanship','control','cp'].forEach(stat => {
+                    stats[stat] = Math.min(stats[stat], piece.headroom[stat]);
+                  });
+                  const mkHidden = (name, value) => {
+                    const i = document.createElement('input');
+                    i.type = 'hidden';
+                    i.name = name;
+                    i.value = value;
+                    i.dataset.autoLock = '1';
+                    materiaForm.appendChild(i);
+                  };
+                  mkHidden(`lock_${piece.slot_key}`, '1');
+                  mkHidden(`lock_${piece.slot_key}_craft`, stats.craftsmanship);
+                  mkHidden(`lock_${piece.slot_key}_ctrl`, stats.control);
+                  mkHidden(`lock_${piece.slot_key}_cp`, stats.cp);
+                });
+              });
+            }
+
+            render();
+            renderPicker();
+            updateTotals();
+          })();
+          </script>
+          {% endif %}
+
+        </section>
       {% else %}
         <section class="panel">
-          <h2>收藏品成本</h2>
-          <p class="hint">可切換 `全伺服器 / 鳳凰` 物價口徑來計算單件成本與每張紫票成本；另外固定顯示一欄 `單件成本({{ display_world }})` 方便對照。</p>
+          <h2>收藏品成本({{ collectable_scrip_label }})</h2>
+          <p class="hint">可切換 `全伺服器 / 鳳凰` 物價口徑來計算單件成本與{{ collectable_cost_label }}；另外固定顯示一欄 `單件成本({{ display_world }})` 方便對照。</p>
 
           <form method="get" action="/" class="search-form" style="margin: 0 0 16px;">
             <input type="hidden" name="tab" value="collectables" />
+            <input type="hidden" name="scrip_type" value="{{ collectable_scrip_type }}" />
             <div class="actions">
               <label class="hint" style="display: grid; gap: 6px;">
                 排序方向
                 <select name="collectable_sort" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);">
-                  <option value="desc" {% if collectable_sort == "desc" %}selected{% endif %}>每張紫票成本高到低</option>
-                  <option value="asc" {% if collectable_sort == "asc" %}selected{% endif %}>每張紫票成本低到高</option>
+                  <option value="desc" {% if collectable_sort == "desc" %}selected{% endif %}>{{ collectable_cost_label }}高到低</option>
+                  <option value="asc" {% if collectable_sort == "asc" %}selected{% endif %}>{{ collectable_cost_label }}低到高</option>
                 </select>
               </label>
               <label class="hint" style="display: grid; gap: 6px;">
@@ -771,10 +1240,10 @@
                   <th>ID</th>
                   <th>職業</th>
                   <th>等級</th>
-                  <th>紫票</th>
+                  <th>{{ collectable_scrip_label }}</th>
                   <th>單件成本({{ price_scope_label }})</th>
                   <th>單件成本({{ display_world }})</th>
-                  <th>每張紫票成本({{ price_scope_label }})</th>
+                  <th>{{ collectable_cost_label }}({{ price_scope_label }})</th>
                 </tr>
               </thead>
               <tbody>
@@ -784,14 +1253,14 @@
                     <td class="muted">{{ row.item_id }}</td>
                     <td>{{ row.craft_type_name }}</td>
                     <td>{{ row.class_job_level if row.class_job_level else "-" }}</td>
-                    <td>{{ row.purple_scrips }}</td>
+                    <td>{{ row.scrip_amount }}</td>
                     <td class="money">{{ fmt_num(row.unit_material_cost) }}</td>
                     <td class="money">{{ fmt_num(row.display_unit_material_cost) }}</td>
                     <td class="money">{{ fmt_num(row.cost_per_scrip) }}</td>
                   </tr>
                 {% else %}
                   <tr>
-                    <td colspan="8" class="muted">目前沒有可計算的收藏品資料。先確認 `collectable_rewards.csv` 已匯入且素材價格完整。</td>
+                    <td colspan="8" class="muted">目前沒有可計算的{{ collectable_scrip_label }}收藏品資料。先確認 `collectable_rewards.csv` 已匯入且素材價格完整。</td>
                   </tr>
                 {% endfor %}
               </tbody>

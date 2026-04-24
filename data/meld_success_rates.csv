@@ -1,0 +1,6 @@
+socket_position,success_rate,notes
+safe,1.00,安全孔 100% 成功
+overmeld_1,0.17,第 1 個非安全孔
+overmeld_2,0.10,第 2 個非安全孔
+overmeld_3,0.07,第 3 個非安全孔
+overmeld_4,0.05,第 4 個非安全孔

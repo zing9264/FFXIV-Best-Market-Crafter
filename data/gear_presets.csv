@@ -1,0 +1,13 @@
+preset_key,piece_order,slot_key,label,base_craft,cap_craft,base_ctrl,cap_ctrl,base_cp,cap_cp
+crp_745_explorer,0,main_hand,主手 探求永恆手鋸,1624,1911,842,990,0,8
+crp_745_explorer,1,off_hand,副手 探求永恆羊角錘,1624,1911,842,990,0,8
+crp_745_explorer,2,head,頭 探求永恆巧匠頭飾,0,109,505,594,10,12
+crp_745_explorer,3,body,身 探求永恆巧匠上裝,1392,1638,505,594,7,8
+crp_745_explorer,4,hands,手 探求永恆巧匠護臂,0,109,505,594,10,12
+crp_745_explorer,5,legs,腿 探求永恆巧匠工作褲,93,109,505,594,0,12
+crp_745_explorer,6,feet,腳 探求永恆巧匠工作靴,93,109,505,594,0,12
+crp_745_explorer,7,earrings,耳飾 黑星石巧匠耳墜,84,99,0,138,81,95
+crp_745_explorer,8,necklace,項鏈 黑星石巧匠圍巾,84,99,0,138,81,95
+crp_745_explorer,9,bracelet,手鐲 黑星石巧匠手鐲,84,99,0,138,81,95
+crp_745_explorer,10,ring_1,戒指1 卡扎納爾巧匠戒指,0,149,156,184,42,49
+crp_745_explorer,11,ring_2,戒指2 卡扎納爾巧匠戒指,0,149,156,184,42,49

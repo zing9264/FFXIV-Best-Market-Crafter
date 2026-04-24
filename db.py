@@ -95,13 +95,23 @@ def init_db():
             """
             CREATE TABLE IF NOT EXISTS collectable_rewards (
                 item_id INTEGER PRIMARY KEY,
-                purple_scrips INTEGER DEFAULT 45,
+                purple_scrips INTEGER DEFAULT 0,
+                orange_scrips INTEGER DEFAULT 0,
                 class_job_level INTEGER DEFAULT 0,
                 recipe_level_table INTEGER DEFAULT 0,
                 craft_type INTEGER DEFAULT -1
             );
             """
         )
+
+        # Migration: older DBs predate the orange_scrips column. Add it in
+        # place rather than dropping the table so we don't lose imported data.
+        cur.execute("PRAGMA table_info(collectable_rewards);")
+        existing_collectable_cols = {row[1] for row in cur.fetchall()}
+        if "orange_scrips" not in existing_collectable_cols:
+            cur.execute(
+                "ALTER TABLE collectable_rewards ADD COLUMN orange_scrips INTEGER DEFAULT 0;"
+            )
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_output ON recipe_ingredients(output_item_id);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_ingredient ON recipe_ingredients(ingredient_item_id);")

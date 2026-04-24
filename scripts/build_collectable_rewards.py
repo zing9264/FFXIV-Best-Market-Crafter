@@ -16,17 +16,37 @@ def resolve_windows_csv(win_path: str) -> Path:
     return Path("/mnt") / path.drive[0].lower() / Path(*path.parts[1:])
 
 
-def load_rate_map(path: Path) -> dict[int, int]:
-    mapping: dict[int, int] = {}
+def load_rate_map(path: Path) -> dict[int, tuple[str, int]]:
+    """Load the per-level collectable scrip reward table.
+
+    Each level maps to a single (scrip_type, amount) pair since a given craft
+    level only rewards one kind of scrip (e.g. lv91-99 purple, lv100 orange).
+    Supports two CSV shapes for backwards compatibility:
+
+      1. New format: ``class_job_level,scrip_type,amount`` (preferred)
+      2. Legacy format: ``class_job_level,purple_scrips`` — treated as purple.
+    """
+
+    mapping: dict[int, tuple[str, int]] = {}
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             try:
                 level = int((row.get("class_job_level") or "").strip())
-                scrips = int((row.get("purple_scrips") or "").strip())
             except ValueError:
                 continue
-            mapping[level] = scrips
+
+            amount_text = (row.get("amount") or row.get("purple_scrips") or "").strip()
+            try:
+                amount = int(amount_text)
+            except ValueError:
+                continue
+
+            scrip_type = (row.get("scrip_type") or "purple").strip().lower() or "purple"
+            if scrip_type not in {"purple", "orange"}:
+                scrip_type = "purple"
+
+            mapping[level] = (scrip_type, amount)
     return mapping
 
 
@@ -96,7 +116,17 @@ def main() -> int:
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with OUTPUT_PATH.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["item_id", "name", "purple_scrips", "class_job_level", "recipe_level_table", "craft_type"])
+        writer.writerow(
+            [
+                "item_id",
+                "name",
+                "purple_scrips",
+                "orange_scrips",
+                "class_job_level",
+                "recipe_level_table",
+                "craft_type",
+            ]
+        )
         for item_id, name in items:
             meta = recipe_meta.get(int(item_id), {})
             class_job_level_text = meta.get("class_job_level", "")
@@ -104,12 +134,20 @@ def main() -> int:
                 class_job_level = int(class_job_level_text)
             except ValueError:
                 class_job_level = 0
-            purple_scrips = rate_map.get(class_job_level, 45)
+
+            # Each level rewards exactly one scrip type. Unknown levels (older
+            # obsolete content) fall through to (none, 0) and get filtered out
+            # of both cost views instead of showing a misleading stub value.
+            scrip_type, amount = rate_map.get(class_job_level, ("none", 0))
+            purple_scrips = amount if scrip_type == "purple" else 0
+            orange_scrips = amount if scrip_type == "orange" else 0
+
             writer.writerow(
                 [
                     item_id,
                     name,
                     purple_scrips,
+                    orange_scrips,
                     class_job_level_text,
                     meta.get("recipe_level_table", ""),
                     meta.get("craft_type", ""),
