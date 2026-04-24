@@ -25,6 +25,17 @@ from config import (
 )
 from db import get_conn, init_db
 from import_collectable_rewards import import_collectable_rewards
+from materia_optimizer import (
+    STAT_KEYS,
+    STAT_LABELS,
+    GearPiece,
+    load_gear_presets,
+    load_materia_stats,
+    load_slot_configs,
+    load_success_rates,
+    optimize,
+    pieces_from_preset,
+)
 from update_prices import update_prices_async, update_prices_for_worlds
 from update_profits import rebuild_profits
 
@@ -694,6 +705,32 @@ def get_collectable_rows(
     return rows
 
 
+def get_materia_prices(conn, world: str) -> dict[int, float]:
+    """Return a {materia_item_id: min_price} map for the given world.
+
+    Only materia that (a) appear in data/materia_stats.csv AND (b) have a
+    positive min_price in the prices table are returned. The optimizer won't
+    recommend materia we can't price.
+    """
+    materia = load_materia_stats()
+    if not materia:
+        return {}
+    ids = [m.item_id for m in materia]
+    placeholders = ",".join(["?"] * len(ids))
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT item_id, min_price
+        FROM prices
+        WHERE item_id IN ({placeholders})
+          AND world = ?
+          AND min_price > 0;
+        """,
+        [*ids, world],
+    )
+    return {row[0]: float(row[1]) for row in cur.fetchall()}
+
+
 def parse_nonnegative_float(value: str, default: float = 0.0) -> float:
     try:
         parsed = float(value)
@@ -842,6 +879,27 @@ def load_dashboard_data():
     if collectable_sort not in {"asc", "desc"}:
         collectable_sort = "desc"
     collectable_scrip_type = normalize_scrip_type(request.args.get("scrip_type", "purple"))
+
+    # ---- Materia optimizer inputs (only consumed when tab == "materia") ----
+    materia_preset_key = request.args.get("materia_preset", "crp_745_explorer").strip()
+    materia_target = {
+        "craftsmanship": int(request.args.get("target_craft", "5386") or 0),
+        "control": int(request.args.get("target_ctrl", "5246") or 0),
+        "cp": int(request.args.get("target_cp", "628") or 0),
+    }
+    materia_locked_pieces: dict[str, dict[str, int]] = {}
+    for piece_key in (
+        "main_hand", "off_hand", "head", "body", "hands", "legs", "feet",
+        "earrings", "necklace", "bracelet", "ring_1", "ring_2",
+    ):
+        if request.args.get(f"lock_{piece_key}"):
+            materia_locked_pieces[piece_key] = {
+                "craftsmanship": int(request.args.get(f"lock_{piece_key}_craft", "0") or 0),
+                "control": int(request.args.get(f"lock_{piece_key}_ctrl", "0") or 0),
+                "cp": int(request.args.get(f"lock_{piece_key}_cp", "0") or 0),
+            }
+    materia_run = request.args.get("materia_run", "").strip() == "1"
+    materia_top_k = max(1, min(10, int(request.args.get("materia_top_k", "3") or 3)))
     page_raw = request.args.get("page", "1").strip()
     page = int(page_raw) if page_raw.isdigit() and int(page_raw) > 0 else 1
     per_page = 100
@@ -901,6 +959,120 @@ def load_dashboard_data():
             else []
         )
 
+        # Materia optimizer tab — only run the solver when the user explicitly
+        # submits the form (materia_run=1). Prices come from the DB.
+        materia_solutions_payload = {"solutions": []}
+        materia_presets = load_gear_presets()
+        materia_preset = materia_presets.get(
+            materia_preset_key, next(iter(materia_presets.values()))
+        )
+        materia_slot_configs = load_slot_configs()
+
+        # Payload for the interactive manual-meld builder (client-side JS).
+        materia_interactive_payload = None
+        if tab == "materia":
+            all_materia = load_materia_stats()
+            prices_for_interactive = get_materia_prices(conn, DISPLAY_WORLD)
+            materia_interactive_payload = {
+                "preset_key": materia_preset_key,
+                "targets": materia_target,
+                "base_stats": materia_preset["base_stats_total"],
+                "pieces": [
+                    {
+                        "index": idx,
+                        "slot_key": p["slot_key"],
+                        "label": p["label"],
+                        "base": p["base"],
+                        "cap": p["cap"],
+                        "headroom": p["headroom"],
+                        "slot_config": {
+                            "safe_sockets": materia_slot_configs[p["slot_key"]].safe_sockets,
+                            "total_sockets": materia_slot_configs[p["slot_key"]].total_sockets,
+                        },
+                    }
+                    for idx, p in enumerate(materia_preset["pieces"])
+                ],
+                "materia": [
+                    {
+                        "item_id": m.item_id,
+                        "name": m.name,
+                        "series": m.series,
+                        "tier": m.tier,
+                        "stat_type": m.stat_type,
+                        "stat_value": m.stat_value,
+                        "price": prices_for_interactive.get(m.item_id, 0),
+                    }
+                    for m in all_materia
+                ],
+                "success_rates": load_success_rates(),
+                "current_max_tier": 12,
+            }
+        materia_results: list = []
+        materia_error: str | None = None
+        materia_solve_seconds: float = 0.0
+        if tab == "materia" and materia_run:
+            from time import perf_counter
+
+            prices_map = get_materia_prices(conn, DISPLAY_WORLD)
+            if not prices_map:
+                materia_error = (
+                    "找不到魔晶石的價格資料,請先跑價格更新(全量更新或指定 ID)。"
+                )
+            else:
+                # Build GearPiece objects from the preset, overlaying any
+                # locked-piece inputs coming from the form.
+                piece_objs = []
+                for piece_info in materia_preset["pieces"]:
+                    locked = piece_info["slot_key"] in materia_locked_pieces
+                    piece_objs.append(
+                        GearPiece(
+                            slot_key=piece_info["slot_key"],
+                            label=piece_info["label"],
+                            headroom=dict(piece_info["headroom"]),
+                            locked=locked,
+                            locked_contribution=(
+                                materia_locked_pieces[piece_info["slot_key"]]
+                                if locked
+                                else {k: 0 for k in STAT_KEYS}
+                            ),
+                        )
+                    )
+                try:
+                    t0 = perf_counter()
+                    materia_results = optimize(
+                        targets=materia_target,
+                        base_stats=materia_preset["base_stats_total"],
+                        pieces=piece_objs,
+                        prices=prices_map,
+                        top_k=materia_top_k,
+                        solver_timeout_seconds=12,
+                    )
+                    materia_solve_seconds = perf_counter() - t0
+                except ValueError as exc:
+                    materia_error = str(exc)
+
+        # Build a JSON-serialisable bundle of ILP solutions for the
+        # client-side "apply solution" buttons. Done here in Python so the
+        # template doesn't have to wrestle with nested comprehensions.
+        materia_solutions_payload = {
+            "solutions": [
+                {
+                    "assignments": [
+                        {
+                            "piece_index": a["piece_index"],
+                            "socket_index": a["socket_index"],
+                            "materia_id": (
+                                a["materia"]["item_id"] if a.get("materia") else None
+                            ),
+                            "locked": a.get("locked", False),
+                        }
+                        for a in r.assignments
+                    ]
+                }
+                for r in materia_results
+            ]
+        }
+
     total_pages = max(1, (total_profit_rows + per_page - 1) // per_page) if tab == "ranking" else 1
 
     return {
@@ -928,6 +1100,21 @@ def load_dashboard_data():
         "collectable_scrip_type": collectable_scrip_type,
         "collectable_scrip_label": COLLECTABLE_SCRIP_TYPES[collectable_scrip_type]["label"],
         "collectable_cost_label": COLLECTABLE_SCRIP_TYPES[collectable_scrip_type]["cost_label"],
+        # Materia optimizer
+        "materia_presets": materia_presets,
+        "materia_preset": materia_preset,
+        "materia_preset_key": materia_preset_key,
+        "materia_target": materia_target,
+        "materia_locked_pieces": materia_locked_pieces,
+        "materia_top_k": materia_top_k,
+        "materia_run": materia_run,
+        "materia_slot_configs": materia_slot_configs,
+        "materia_results": materia_results,
+        "materia_error": materia_error,
+        "materia_solve_seconds": materia_solve_seconds,
+        "materia_stat_labels": STAT_LABELS,
+        "materia_interactive_payload": materia_interactive_payload,
+        "materia_solutions_payload": materia_solutions_payload if tab == "materia" else {"solutions": []},
         "min_daily_sales": min_daily_sales,
         "min_price_gap": min_price_gap,
         "min_past_profit": min_past_profit,
