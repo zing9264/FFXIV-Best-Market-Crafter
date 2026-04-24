@@ -776,7 +776,7 @@
               <label class="hint" style="display:grid; gap:4px;">
                 解的數量 (top K)
                 <select name="materia_top_k" style="padding:8px; border:1px solid var(--line); border-radius:12px; background: var(--panel-strong);">
-                  {% for k in [1,3,5,10] %}
+                  {% for k in [1,3,5] %}
                   <option value="{{ k }}" {% if k == materia_top_k %}selected{% endif %}>{{ k }}</option>
                   {% endfor %}
                 </select>

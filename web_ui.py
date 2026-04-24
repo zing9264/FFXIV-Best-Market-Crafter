@@ -899,7 +899,10 @@ def load_dashboard_data():
                 "cp": int(request.args.get(f"lock_{piece_key}_cp", "0") or 0),
             }
     materia_run = request.args.get("materia_run", "").strip() == "1"
-    materia_top_k = max(1, min(10, int(request.args.get("materia_top_k", "3") or 3)))
+    # Hard-cap top_k: each extra iteration is a full CBC re-solve with a
+    # fresh no-good cut and peaks memory further. K=10 was observed to OOM
+    # / hang on a 16 GB machine, so clamp to 5 and default to 3.
+    materia_top_k = max(1, min(5, int(request.args.get("materia_top_k", "3") or 3)))
     page_raw = request.args.get("page", "1").strip()
     page = int(page_raw) if page_raw.isdigit() and int(page_raw) > 0 else 1
     per_page = 100
