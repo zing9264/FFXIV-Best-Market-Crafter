@@ -1054,14 +1054,23 @@
                     const idx = parseInt(btn.dataset.solutionIndex, 10);
                     const sol = solutionData.solutions[idx];
                     if (!sol) return;
-                    // Clear current state, then apply this solution's assignments.
+                    // Only clear sockets on pieces that participated in the
+                    // auto-solve (checked rows). Unchecked pieces hold the
+                    // player's manual placement and were passed to the ILP
+                    // as locked contributions, not re-melded — wiping them
+                    // here would throw away the meld the player already paid
+                    // for and made the solver satisfy targets around.
                     for (let p = 0; p < state.length; p++) {
+                      if (!included[p]) continue;
                       state[p] = new Array(state[p].length).fill(null);
                     }
                     sol.assignments.forEach(a => {
-                      if (a.materia_id && a.socket_index >= 0) {
-                        state[a.piece_index][a.socket_index] = a.materia_id;
-                      }
+                      if (!a.materia_id || a.socket_index < 0) return;
+                      // Defensive: ignore backend assignments pointing at a
+                      // piece the user has since unchecked (shouldn't happen
+                      // on the same submit but protects against stale data).
+                      if (!included[a.piece_index]) return;
+                      state[a.piece_index][a.socket_index] = a.materia_id;
                     });
                     render();
                     updateTotals();
