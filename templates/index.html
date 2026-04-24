@@ -794,6 +794,32 @@
           <p class="hint" style="color: #c0392b;">⚠️ {{ materia_error }}</p>
           {% endif %}
 
+          {% if materia_run and not materia_error %}
+          <p class="hint">
+            自動計算完成（耗時 {{ '%.1f' % materia_solve_seconds }}s,{{ materia_results|length }} 個方案)。
+            點下方任一「套用方案」按鈕把該方案填入下方的手動模擬器。
+          </p>
+
+          <div id="solution-buttons" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+            {% for r in materia_results %}
+            <button type="button" class="btn solution-apply-btn" data-solution-index="{{ loop.index0 }}"
+                    style="padding: 10px 14px; border-radius: 10px; font-size: 13px; text-align: left;">
+              <div style="font-weight: bold;">套用方案 #{{ loop.index }}</div>
+              <div style="font-size: 11px; margin-top: 2px;">
+                期望 {{ '{:,.0f}'.format(r.total_cost) }} gil
+                · 作業 {{ r.total_stats.craftsmanship }}/{{ r.target_stats.craftsmanship }}
+                · 加工 {{ r.total_stats.control }}/{{ r.target_stats.control }}
+                · CP {{ r.total_stats.cp }}/{{ r.target_stats.cp }}
+              </div>
+            </button>
+            {% else %}
+            <p class="hint">目前沒有可行方案。請檢查目標是否過高、裝備 cap 是否不足。</p>
+            {% endfor %}
+          </div>
+
+          <script id="solution-data" type="application/json">{{ materia_solutions_payload | tojson | safe }}</script>
+          {% endif %}
+
           {% if materia_interactive_payload %}
           <section class="panel" id="manual-meld" style="margin-top: 20px; background: var(--panel-strong);"
                    data-payload='{{ materia_interactive_payload | tojson | safe }}'>
@@ -1161,32 +1187,6 @@
             updateTotals();
           })();
           </script>
-          {% endif %}
-
-          {% if materia_run and not materia_error %}
-          <p class="hint">
-            自動計算完成（耗時 {{ '%.1f' % materia_solve_seconds }}s,{{ materia_results|length }} 個方案)。
-            點下方任一「套用」按鈕把該方案填入下方的手動模擬器。
-          </p>
-
-          <div id="solution-buttons" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
-            {% for r in materia_results %}
-            <button type="button" class="btn solution-apply-btn" data-solution-index="{{ loop.index0 }}"
-                    style="padding: 10px 14px; border-radius: 10px; font-size: 13px; text-align: left;">
-              <div style="font-weight: bold;">套用方案 #{{ loop.index }}</div>
-              <div style="font-size: 11px; margin-top: 2px;">
-                期望 {{ '{:,.0f}'.format(r.total_cost) }} gil
-                · 作業 {{ r.total_stats.craftsmanship }}/{{ r.target_stats.craftsmanship }}
-                · 加工 {{ r.total_stats.control }}/{{ r.target_stats.control }}
-                · CP {{ r.total_stats.cp }}/{{ r.target_stats.cp }}
-              </div>
-            </button>
-            {% else %}
-            <p class="hint">目前沒有可行方案。請檢查目標是否過高、裝備 cap 是否不足。</p>
-            {% endfor %}
-          </div>
-
-          <script id="solution-data" type="application/json">{{ materia_solutions_payload | tojson | safe }}</script>
           {% endif %}
 
         </section>
