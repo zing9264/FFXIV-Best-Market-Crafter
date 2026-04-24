@@ -784,34 +784,10 @@
               <button class="btn" type="submit">計算</button>
             </div>
 
-            <details>
-              <summary class="hint" style="cursor: pointer;">選擇「不參與優化」的裝備 (已鑲滿可直接指定貢獻值)</summary>
-              <div class="table-wrap" style="margin-top: 10px;">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>部位</th>
-                      <th>保留不動</th>
-                      <th>作業精度貢獻</th>
-                      <th>加工精度貢獻</th>
-                      <th>制作力貢獻</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {% for piece in materia_preset.pieces %}
-                    {% set locked = piece.slot_key in materia_locked_pieces %}
-                    <tr>
-                      <td>{{ piece.label }}</td>
-                      <td><input type="checkbox" name="lock_{{ piece.slot_key }}" value="1" {% if locked %}checked{% endif %} /></td>
-                      <td><input type="number" name="lock_{{ piece.slot_key }}_craft" value="{{ materia_locked_pieces.get(piece.slot_key, {}).get('craftsmanship', 0) }}" style="width: 90px; padding:6px;" /></td>
-                      <td><input type="number" name="lock_{{ piece.slot_key }}_ctrl" value="{{ materia_locked_pieces.get(piece.slot_key, {}).get('control', 0) }}" style="width: 90px; padding:6px;" /></td>
-                      <td><input type="number" name="lock_{{ piece.slot_key }}_cp" value="{{ materia_locked_pieces.get(piece.slot_key, {}).get('cp', 0) }}" style="width: 90px; padding:6px;" /></td>
-                    </tr>
-                    {% endfor %}
-                  </tbody>
-                </table>
-              </div>
-            </details>
+            <p class="hint" style="margin: 0; font-size: 11px;">
+              提示:要把某件裝備從自動計算中排除(保持現有鑲嵌不動),
+              請在下方手動模擬器那件裝旁的勾選方塊解除勾選。
+            </p>
           </form>
 
           {% if materia_error %}
@@ -990,6 +966,39 @@
                 const meet = diff >= 0;
                 return `<span style="color:${color}; font-weight:bold;">${label}</span>: <span style="font-variant-numeric: tabular-nums; ${meet ? '' : 'color:#c0392b;'}">${got}</span> / ${tgt} <span class="muted">(${meet ? '+' : ''}${diff})</span>`;
               };
+
+              // Per-materia expected purchase count: raw sockets counted
+              // 1/success_rate each (so a tier-12 in 5%-rate slot contributes
+              // 20 expected purchases). Only pieces that are part of the
+              // optimisation (checked) count toward the shopping list — the
+              // player already owns the materia on unchecked pieces.
+              const shopList = {};
+              payload.pieces.forEach((piece, pIdx) => {
+                if (!included[pIdx]) return;
+                state[pIdx].forEach((mid, sIdx) => {
+                  if (!mid) return;
+                  const m = payload.materia.find(x => x.item_id === mid);
+                  if (!m) return;
+                  const rate = rateAt(socketPosition(piece, sIdx));
+                  const expected = 1 / Math.max(rate, 1e-6);
+                  if (!shopList[m.item_id]) shopList[m.item_id] = {m, count: 0};
+                  shopList[m.item_id].count += expected;
+                });
+              });
+              const shopEntries = Object.values(shopList).sort(
+                (a, b) => b.count * b.m.price - a.count * a.m.price
+              );
+              let shopHtml = '';
+              if (shopEntries.length) {
+                shopHtml = '<div style="margin-top: 10px; font-size: 11px;"><strong>期望購買量</strong> (需抓多少顆才鑲到滿):<br/>';
+                shopHtml += shopEntries.map(({m, count}) => {
+                  const exp = count * m.price;
+                  const short = m.name.replace('魔晶石','');
+                  return `<span style="display:inline-block; margin: 2px 6px 2px 0; padding: 2px 6px; border-radius: 6px; background: rgba(120,180,200,0.12);" title="${m.price.toLocaleString()}g × ${count.toFixed(1)} 顆">${count.toFixed(1)} × ${short} = ${Math.round(exp).toLocaleString()}g</span>`;
+                }).join('');
+                shopHtml += '</div>';
+              }
+
               out.innerHTML = `
                 ${fmt('作業', finals.craftsmanship, target.craftsmanship, stat_colors.craftsmanship)}
                 &nbsp;&nbsp;|&nbsp;&nbsp;
@@ -998,6 +1007,7 @@
                 ${fmt('CP', finals.cp, target.cp, stat_colors.cp)}
                 &nbsp;&nbsp;|&nbsp;&nbsp;
                 <strong>期望總成本: ${Math.round(cost).toLocaleString()} gil</strong>
+                ${shopHtml}
               `;
             }
 
@@ -1150,72 +1160,29 @@
           {% endif %}
 
           {% if materia_run and not materia_error %}
-          <p class="hint">解算耗時 {{ '%.1f' % materia_solve_seconds }}s,取得 {{ materia_results|length }} 個方案。空裝 base {{ materia_preset.base_stats_total.craftsmanship }}/{{ materia_preset.base_stats_total.control }}/{{ materia_preset.base_stats_total.cp }}。</p>
+          <p class="hint">
+            自動計算完成（耗時 {{ '%.1f' % materia_solve_seconds }}s,{{ materia_results|length }} 個方案)。
+            點下方任一「套用」按鈕把該方案填入下方的手動模擬器。
+          </p>
 
-          <div id="solution-buttons" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+          <div id="solution-buttons" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
             {% for r in materia_results %}
-            <button type="button" class="btn ghost solution-apply-btn" data-solution-index="{{ loop.index0 }}">
-              方案 #{{ loop.index }} · {{ '{:,.0f}'.format(r.total_cost) }}g ({{ r.total_stats.craftsmanship }}/{{ r.total_stats.control }}/{{ r.total_stats.cp }})
+            <button type="button" class="btn solution-apply-btn" data-solution-index="{{ loop.index0 }}"
+                    style="padding: 10px 14px; border-radius: 10px; font-size: 13px; text-align: left;">
+              <div style="font-weight: bold;">套用方案 #{{ loop.index }}</div>
+              <div style="font-size: 11px; margin-top: 2px;">
+                期望 {{ '{:,.0f}'.format(r.total_cost) }} gil
+                · 作業 {{ r.total_stats.craftsmanship }}/{{ r.target_stats.craftsmanship }}
+                · 加工 {{ r.total_stats.control }}/{{ r.target_stats.control }}
+                · CP {{ r.total_stats.cp }}/{{ r.target_stats.cp }}
+              </div>
             </button>
+            {% else %}
+            <p class="hint">目前沒有可行方案。請檢查目標是否過高、裝備 cap 是否不足。</p>
             {% endfor %}
           </div>
 
           <script id="solution-data" type="application/json">{{ materia_solutions_payload | tojson | safe }}</script>
-
-          {% for r in materia_results %}
-          <section class="panel" style="margin-bottom: 14px; background: var(--panel-strong);">
-            <h3 style="margin: 0 0 8px;">方案 #{{ loop.index }} · 期望成本 {{ '{:,.0f}'.format(r.total_cost) }} gil</h3>
-            <p class="hint">
-              作業 {{ r.total_stats.craftsmanship }} (目標 {{ r.target_stats.craftsmanship }}) · 加工 {{ r.total_stats.control }} (目標 {{ r.target_stats.control }}) · CP {{ r.total_stats.cp }} (目標 {{ r.target_stats.cp }})
-            </p>
-
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th style="width: 28%;">裝備</th>
-                    <th>魔晶石配置 (依孔位)</th>
-                    <th>該件期望成本</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% set ns = namespace(prev_piece=-1) %}
-                  {% for piece_info in materia_preset.pieces %}
-                    {% set p_idx = loop.index0 %}
-                    {% set piece_assigns = [] %}
-                    {% set piece_cost = namespace(total=0) %}
-                    {% for a in r.assignments %}
-                      {% if a.piece_index == p_idx %}
-                        {% set _ = piece_assigns.append(a) %}
-                        {% if a.materia %}{% set piece_cost.total = piece_cost.total + a.materia.expected_cost %}{% endif %}
-                      {% endif %}
-                    {% endfor %}
-                    <tr>
-                      <td>{{ piece_info.label }}</td>
-                      <td>
-                        {% for a in piece_assigns %}
-                          {% if a.locked %}
-                            <span class="muted">已鎖定 (+{{ a.locked_contribution.craftsmanship }}/{{ a.locked_contribution.control }}/{{ a.locked_contribution.cp }})</span>
-                          {% elif a.materia %}
-                            <span title="{{ a.materia.name }} · 孔位 {{ a.socket_index + 1 }} ({{ a.socket_kind }}) · 價格 {{ '{:,.0f}'.format(a.materia.price) }} ÷ 成功率 {{ '%.0f' % (a.materia.success_rate * 100) }}% = {{ '{:,.0f}'.format(a.materia.expected_cost) }}g"
-                                  style="display:inline-block; padding: 2px 6px; margin: 1px 2px; border-radius: 6px; background: rgba(120,180,200,0.15);">
-                              {{ a.materia.name | replace('魔晶石','') }}
-                            </span>
-                          {% else %}
-                            <span class="muted">(空)</span>
-                          {% endif %}
-                        {% endfor %}
-                      </td>
-                      <td class="money">{{ '{:,.0f}'.format(piece_cost.total) }}</td>
-                    </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          </section>
-          {% else %}
-          <p class="hint">目前沒有可行方案。請檢查目標是否過高、裝備 cap 是否不足。</p>
-          {% endfor %}
           {% endif %}
 
         </section>
