@@ -281,13 +281,15 @@ def _tier_allowed_at_socket(slot_conf: SlotConfig, socket_idx: int, tier: int) -
     Rule set (current patch):
       - Safe sockets: any tier.
       - First overmeld socket: any tier (including current top tier).
-      - Later overmeld sockets: must be <= CURRENT_MAX_TIER - 1 (tier 12 forbidden).
+      - Later overmeld sockets: ODD tiers only (1, 3, 5, 7, 9, 11).
+        The odd-tier rule also enforces the older "no tier 12 past first
+        overmeld" since 12 is even.
     """
     if _socket_is_safe(slot_conf, socket_idx):
         return True
     if _socket_is_first_overmeld(slot_conf, socket_idx):
         return True
-    return tier < CURRENT_MAX_TIER
+    return tier % 2 == 1
 
 
 def _prune_dominated(materia: list[Materia], prices: Mapping[int, float]) -> list[Materia]:

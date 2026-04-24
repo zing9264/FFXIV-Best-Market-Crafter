@@ -828,9 +828,13 @@
               return 'overmeld_' + (socketIdx - safe + 1);
             }
             function allowedAtSocket(piece, socketIdx, materia) {
+              // Meld rules (current patch):
+              //   safe slots       — any tier
+              //   overmeld_1       — any tier (even or odd, up to current max)
+              //   overmeld_2..4    — odd tiers only (1,3,5,7,9,11)
               const pos = socketPosition(piece, socketIdx);
               if (pos === 'safe' || pos === 'overmeld_1') return true;
-              return materia.tier < payload.current_max_tier;
+              return materia.tier % 2 === 1;
             }
             function rateAt(pos) {
               if (pos === 'safe') return 1.0;
