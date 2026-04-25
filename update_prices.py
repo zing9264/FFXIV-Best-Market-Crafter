@@ -20,6 +20,33 @@ from config import (
 from db import get_conn, init_db
 
 
+def _load_materia_item_ids() -> List[int]:
+    """Pull materia item_ids out of data/materia_stats.csv.
+
+    Most crafting materia (巨匠/名匠/魔匠 series) aren't ingredients in any
+    recipe, so they wouldn't otherwise be touched by the full price refresh.
+    Including them here keeps the materia optimizer's prices in sync with
+    every full update. Returns an empty list if the CSV is missing.
+    """
+    import csv
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent / "data" / "materia_stats.csv"
+    if not path.exists():
+        return []
+    ids: list[int] = []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            try:
+                iid = int((row.get("item_id") or "").strip())
+            except (TypeError, ValueError):
+                continue
+            if iid > 0:
+                ids.append(iid)
+    return ids
+
+
 def get_item_ids(conn) -> List[int]:
     cur = conn.cursor()
     cur.execute(
@@ -31,6 +58,7 @@ def get_item_ids(conn) -> List[int]:
     )
     ids = [row[0] for row in cur.fetchall()]
     ids.extend(EXTRA_ITEM_IDS)
+    ids.extend(_load_materia_item_ids())
     return sorted(set(i for i in ids if isinstance(i, int) and i > 0))
 
 
