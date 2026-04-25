@@ -848,6 +848,35 @@
             const included = payload.pieces.map(() => true);
             let activeSocket = null; // [pieceIdx, socketIdx] or null
 
+            // Rehydrate state from URL so a form submit (which reloads the
+            // page) doesn't throw away the player's manual placements.
+            // Format:
+            //   placements=<piece>-<socket>-<materia_id>,<piece>-<socket>-<materia_id>,...
+            //   excluded=<piece_idx>,<piece_idx>,...
+            (function restoreFromUrl() {
+              const params = new URLSearchParams(location.search);
+              const placements = params.get('placements');
+              if (placements) {
+                placements.split(',').forEach(triple => {
+                  const parts = triple.split('-').map(x => parseInt(x, 10));
+                  if (parts.length !== 3 || parts.some(isNaN)) return;
+                  const [p, s, mid] = parts;
+                  if (p >= 0 && p < state.length && s >= 0 && s < state[p].length) {
+                    state[p][s] = mid;
+                  }
+                });
+              }
+              const excluded = params.get('excluded');
+              if (excluded) {
+                excluded.split(',').forEach(str => {
+                  const idx = parseInt(str, 10);
+                  if (!isNaN(idx) && idx >= 0 && idx < included.length) {
+                    included[idx] = false;
+                  }
+                });
+              }
+            })();
+
             function socketPosition(piece, socketIdx) {
               const safe = piece.slot_config.safe_sockets;
               if (socketIdx < safe) return 'safe';
@@ -1160,14 +1189,42 @@
               });
             }
 
-            // Before the auto-solve form submits, translate any unchecked
-            // pieces into the form's lock_* fields so the ILP treats them as
-            // fixed contributions. Unchecked + no materia = excluded entirely.
+            // Before the auto-solve form submits, serialise the interactive
+            // state into hidden fields so the page reload round-trip doesn't
+            // wipe what the player placed. Three pieces of state travel:
+            //   placements=P-S-MID,...   every currently-melded socket
+            //   excluded=P,P,...         piece indices the player unchecked
+            //   lock_<slot>_*            clamped stat contribution the ILP
+            //                            should treat as already-achieved
             const materiaForm = document.getElementById('materia-form');
             if (materiaForm) {
               materiaForm.addEventListener('submit', () => {
-                // Strip previously-injected sync inputs so re-submits stay clean.
                 materiaForm.querySelectorAll('[data-auto-lock]').forEach(n => n.remove());
+                const mkHidden = (name, value) => {
+                  const i = document.createElement('input');
+                  i.type = 'hidden';
+                  i.name = name;
+                  i.value = value;
+                  i.dataset.autoLock = '1';
+                  materiaForm.appendChild(i);
+                };
+
+                // 1. Serialise placements (so state survives the reload).
+                const placements = [];
+                state.forEach((sockets, pIdx) => {
+                  sockets.forEach((mid, sIdx) => {
+                    if (mid) placements.push(`${pIdx}-${sIdx}-${mid}`);
+                  });
+                });
+                if (placements.length) mkHidden('placements', placements.join(','));
+
+                // 2. Serialise excluded pieces.
+                const excluded = [];
+                included.forEach((inc, pIdx) => { if (!inc) excluded.push(pIdx); });
+                if (excluded.length) mkHidden('excluded', excluded.join(','));
+
+                // 3. Build lock_* hidden inputs for the ILP so unchecked
+                // pieces are treated as locked contributions.
                 payload.pieces.forEach((piece, pIdx) => {
                   if (included[pIdx]) return;
                   const stats = {craftsmanship:0, control:0, cp:0};
@@ -1176,19 +1233,9 @@
                     const m = payload.materia.find(x => x.item_id === mid);
                     if (m) stats[m.stat_type] += m.stat_value;
                   });
-                  // Clamp locked contribution to the piece's headroom so we
-                  // don't pretend it grants more stat than the cap allows.
                   ['craftsmanship','control','cp'].forEach(stat => {
                     stats[stat] = Math.min(stats[stat], piece.headroom[stat]);
                   });
-                  const mkHidden = (name, value) => {
-                    const i = document.createElement('input');
-                    i.type = 'hidden';
-                    i.name = name;
-                    i.value = value;
-                    i.dataset.autoLock = '1';
-                    materiaForm.appendChild(i);
-                  };
                   mkHidden(`lock_${piece.slot_key}`, '1');
                   mkHidden(`lock_${piece.slot_key}_craft`, stats.craftsmanship);
                   mkHidden(`lock_${piece.slot_key}_ctrl`, stats.control);
