@@ -539,14 +539,22 @@ def load_recipe_detail(conn, item_id: int):
 
     ingredients = []
     materials_total = 0.0
+    display_materials_total = 0.0
     has_all_prices = True
+    has_all_display_prices = True
     for ing in cur.fetchall():
         unit_price = normalize_nonzero_value(ing[4])
+        display_price = normalize_nonzero_value(ing[5])
         line_total = unit_price * ing[2] if unit_price is not None else None
+        display_line_total = display_price * ing[2] if display_price is not None else None
         if line_total is None:
             has_all_prices = False
         else:
             materials_total += line_total
+        if display_line_total is None:
+            has_all_display_prices = False
+        else:
+            display_materials_total += display_line_total
         ingredients.append(
             {
                 "item_id": ing[0],
@@ -592,6 +600,7 @@ def load_recipe_detail(conn, item_id: int):
         },
         "ingredients": ingredients,
         "materials_total": materials_total if has_all_prices else None,
+        "display_materials_total": display_materials_total if has_all_display_prices else None,
         "unit_material_cost": unit_material_cost,
         "price_gap": price_gap,
         "display_world": DISPLAY_WORLD,

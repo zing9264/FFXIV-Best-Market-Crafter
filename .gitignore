@@ -8,7 +8,11 @@ __pycache__/
 
 # Env
 .env
+.venv/
 .venv-wsl/
+
+# Local tooling
+.claude/
 
 # Runtime
 *.log
