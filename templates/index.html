@@ -500,6 +500,10 @@
                 <button class="btn primary" type="submit">更新這張製作表價格</button>
               </form>
 
+              <div style="margin-bottom: 8px;">
+                <label style="font-size: .95rem; font-weight: 600;">素材成本來源</label>
+                <button id="lookup-scope-btn" class="btn ghost" style="margin-left: 8px; font-size: .85rem;" onclick="toggleLookupScope()">全伺服器</button>
+              </div>
               <div class="summary">
                 <div class="card">
                   <div class="label">成品價格（{{ detail.display_world }}）</div>
@@ -507,23 +511,51 @@
                   <div class="subvalue">最低掛單價</div>
                 </div>
                 <div class="card">
-                  <div class="label">素材總和</div>
-                  <div class="value money">{{ fmt_num(detail.materials_total) }}</div>
+                  <div class="label">素材總和<span id="lookup-scope-tag">（全伺服器）</span></div>
+                  <div class="value money" id="lookup-materials-total">{{ fmt_num(detail.materials_total) }}</div>
                   <div class="subvalue">整批配方總成本</div>
                 </div>
                 <div class="card">
                   <div class="label">單件素材成本</div>
-                  <div class="value money">{{ fmt_num(detail.unit_material_cost) }}</div>
+                  <div class="value money" id="lookup-unit-cost">{{ fmt_num(detail.unit_material_cost) }}</div>
                   <div class="subvalue">素材總和 / Yield {{ detail.yield }}</div>
                 </div>
                 <div class="card">
                   <div class="label">價差</div>
-                  <div class="value money {% if detail.price_gap is not none and detail.price_gap >= 0 %}positive{% elif detail.price_gap is not none %}negative{% endif %}">
+                  <div class="value money {% if detail.price_gap is not none and detail.price_gap >= 0 %}positive{% elif detail.price_gap is not none %}negative{% endif %}" id="lookup-price-gap">
                     {{ fmt_num(detail.price_gap) }}
                   </div>
                   <div class="subvalue">成品價格 - 單件素材成本</div>
                 </div>
               </div>
+              {% if detail.materials_total is not none and detail.display_materials_total is not none %}
+              <script>
+              (function() {
+                var allTotal = {{ detail.materials_total }};
+                var phoenixTotal = {{ detail.display_materials_total }};
+                var yieldQty = {{ detail.yield }};
+                var sellPrice = {{ detail.product.sell_price if detail.product.sell_price is not none else 'null' }};
+                var scope = 'all';
+                function fmt(n) {
+                  if (n === null || n === undefined) return '-';
+                  return Math.round(n).toLocaleString();
+                }
+                window.toggleLookupScope = function() {
+                  scope = scope === 'all' ? 'phoenix' : 'all';
+                  var total = scope === 'all' ? allTotal : phoenixTotal;
+                  var unit = total / yieldQty;
+                  var gap = sellPrice !== null ? sellPrice - unit : null;
+                  document.getElementById('lookup-scope-btn').textContent = scope === 'all' ? '全伺服器' : '鳳凰';
+                  document.getElementById('lookup-scope-tag').textContent = scope === 'all' ? '（全伺服器）' : '（鳳凰）';
+                  document.getElementById('lookup-materials-total').textContent = fmt(total);
+                  document.getElementById('lookup-unit-cost').textContent = fmt(unit);
+                  var gapEl = document.getElementById('lookup-price-gap');
+                  gapEl.textContent = fmt(gap);
+                  gapEl.className = 'value money ' + (gap !== null && gap >= 0 ? 'positive' : gap !== null ? 'negative' : '');
+                };
+              })();
+              </script>
+              {% endif %}
 
               <div class="summary">
                 <div class="card">
