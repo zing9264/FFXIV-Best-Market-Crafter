@@ -52,7 +52,8 @@ python -m PyInstaller BestMarketCrafter.spec
 
 - **雙定價範圍**: 同時追蹤全伺服器最低價（繁中服）與單一伺服器價格（鳳凰）
 - **背景任務**: 使用 threading 處理長時間的價格更新，支援取消與進度追蹤
-- **速率限制**: Universalis API 限制 MAX_RPS=2.0, MAX_BATCH_SIZE=40, MAX_CONCURRENCY=4
+- **價格來源**: Universalis `/aggregated` 端點(單次呼叫同時回 world/dc/region 三層;舊的區域聚合端點長期 504 已棄用)。批次上限 100 顆(超過被靜默截斷),MAX_RPS=4, MAX_CONCURRENCY=6;全量更新約 45 秒
+- **不可交易道具**: 更新前先用 `/marketable` 清單過濾,否則 aggregated 對含不可交易 id 的整批回 400
 - **環境變數**: FF14_APP_HOST, FF14_APP_PORT, FF14_APP_DEBUG, FF14_DB_PATH
 
 ## Development Guidelines

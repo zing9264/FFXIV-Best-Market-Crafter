@@ -33,9 +33,10 @@ DISPLAY_WORLD = os.environ.get("FF14_DISPLAY_WORLD", "鳳凰")
 WORLD = os.environ.get("FF14_WORLD", LOWEST_WORLD)
 
 # Universalis batching / rate limiting
-MAX_BATCH_SIZE = int(os.environ.get("FF14_MAX_BATCH_SIZE", "40"))
-MAX_RPS = float(os.environ.get("FF14_MAX_RPS", "2"))
-MAX_CONCURRENCY = int(os.environ.get("FF14_MAX_CONCURRENCY", "4"))
+# aggregated 端點單次上限 100 顆(超過會被靜默截斷,勿調高)
+MAX_BATCH_SIZE = int(os.environ.get("FF14_MAX_BATCH_SIZE", "100"))
+MAX_RPS = float(os.environ.get("FF14_MAX_RPS", "4"))
+MAX_CONCURRENCY = int(os.environ.get("FF14_MAX_CONCURRENCY", "6"))
 
 # Optional: extra item IDs to always refresh prices for
 EXTRA_ITEM_IDS = [

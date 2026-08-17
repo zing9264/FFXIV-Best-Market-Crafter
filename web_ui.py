@@ -230,86 +230,85 @@ def start_full_refresh_job() -> bool:
 
 
 def run_full_refresh_job() -> None:
-    worlds = [LOWEST_WORLD, DISPLAY_WORLD]
+    # aggregated 端點單趟同時取得區域最低價與顯示伺服器價格,不再逐 world 跑兩輪
+    scope_label = f"{LOWEST_WORLD}+{DISPLAY_WORLD}"
     total_updated = 0
 
     try:
-        for world in worlds:
-            last_logged_batch = -1
+        last_logged_batch = -1
+        update_refresh_state(
+            phase="fetching_prices",
+            message=f"正在更新 {scope_label} 價格",
+            world=scope_label,
+            total_ids=0,
+            total_batches=0,
+            completed_batches=0,
+        )
+        append_app_log(f"開始更新價格範圍：{scope_label}")
+        append_refresh_stats("world_started", world=scope_label)
+
+        def on_progress(progress: dict) -> None:
+            nonlocal last_logged_batch
             update_refresh_state(
-                phase="fetching_prices",
-                message=f"正在更新 {world} 價格",
-                world=world,
-                total_ids=0,
-                total_batches=0,
-                completed_batches=0,
+                phase=progress.get("phase", "fetching_prices"),
+                message=f"正在更新 {scope_label} 價格",
+                world=scope_label,
+                total_ids=progress.get("total_ids", 0),
+                total_batches=progress.get("total_batches", 0),
+                completed_batches=progress.get("completed_batches", 0),
+                updated_rows=progress.get("updated_rows", 0),
             )
-            append_app_log(f"開始更新價格範圍：{world}")
-            append_refresh_stats("world_started", world=world)
-
-            def on_progress(progress: dict) -> None:
-                nonlocal last_logged_batch
-                update_refresh_state(
-                    phase=progress.get("phase", "fetching_prices"),
-                    message=f"正在更新 {world} 價格",
-                    world=world,
-                    total_ids=progress.get("total_ids", 0),
-                    total_batches=progress.get("total_batches", 0),
-                    completed_batches=progress.get("completed_batches", 0),
-                    updated_rows=total_updated + progress.get("updated_rows", 0),
-                )
-                completed_batches = int(progress.get("completed_batches", 0) or 0)
-                if completed_batches != last_logged_batch:
-                    last_logged_batch = completed_batches
-                    append_refresh_stats(
-                        "world_progress",
-                        world=world,
-                        total_ids=int(progress.get("total_ids", 0) or 0),
-                        total_batches=int(progress.get("total_batches", 0) or 0),
-                        completed_batches=completed_batches,
-                        updated_rows=total_updated + int(progress.get("updated_rows", 0) or 0),
-                        stats=progress.get("stats", {}),
-                    )
-
-            updated = int(
-                asyncio.run(
-                    update_prices_async(
-                        world=world,
-                        progress_callback=on_progress,
-                        should_cancel=is_cancel_requested,
-                    )
-                )
-                or 0
-            )
-            if is_cancel_requested():
-                append_app_log(f"全量更新已中斷，停止於 {world}")
+            completed_batches = int(progress.get("completed_batches", 0) or 0)
+            if completed_batches != last_logged_batch:
+                last_logged_batch = completed_batches
                 append_refresh_stats(
-                    "refresh_cancelled",
-                    world=world,
-                    updated_rows=total_updated + updated,
+                    "world_progress",
+                    world=scope_label,
+                    total_ids=int(progress.get("total_ids", 0) or 0),
+                    total_batches=int(progress.get("total_batches", 0) or 0),
+                    completed_batches=completed_batches,
+                    updated_rows=int(progress.get("updated_rows", 0) or 0),
+                    stats=progress.get("stats", {}),
                 )
-                update_refresh_state(
-                    running=False,
-                    cancel_requested=False,
-                    phase="cancelled",
-                    message="全量更新已中斷",
-                    world=world,
-                    updated_rows=total_updated + updated,
-                    finished_at=time.time(),
+
+        total_updated = int(
+            asyncio.run(
+                update_prices_async(
+                    world=DISPLAY_WORLD,
+                    progress_callback=on_progress,
+                    should_cancel=is_cancel_requested,
                 )
-                return
-            total_updated += updated
-            append_app_log(f"{world} 價格更新完成，累計 {total_updated} 筆")
+            )
+            or 0
+        )
+        if is_cancel_requested():
+            append_app_log(f"全量更新已中斷，停止於 {scope_label}")
             append_refresh_stats(
-                "world_finished",
-                world=world,
+                "refresh_cancelled",
+                world=scope_label,
                 updated_rows=total_updated,
             )
             update_refresh_state(
-                message=f"{world} 價格更新完成",
-                world=world,
+                running=False,
+                cancel_requested=False,
+                phase="cancelled",
+                message="全量更新已中斷",
+                world=scope_label,
                 updated_rows=total_updated,
+                finished_at=time.time(),
             )
+            return
+        append_app_log(f"{scope_label} 價格更新完成，累計 {total_updated} 筆")
+        append_refresh_stats(
+            "world_finished",
+            world=scope_label,
+            updated_rows=total_updated,
+        )
+        update_refresh_state(
+            message=f"{scope_label} 價格更新完成",
+            world=scope_label,
+            updated_rows=total_updated,
+        )
 
         update_refresh_state(
             phase="rebuilding_profits",
@@ -1321,17 +1320,19 @@ def refresh_status():
 
 @app.get("/logs/app")
 def download_app_log():
-    path = Path(APP_LOG_PATH)
+    # 一律用絕對路徑:send_file 對相對路徑是以 Flask root_path 解析,
+    # 打包成 exe 後 root_path 會指向臨時解壓目錄而非工作目錄
+    path = Path(APP_LOG_PATH).resolve()
     if not path.exists():
-        abort(404)
+        return "尚無 App Log —執行過更新等操作後才會產生。", 404, {"Content-Type": "text/plain; charset=utf-8"}
     return send_file(path, as_attachment=True, download_name=path.name, mimetype="text/plain")
 
 
 @app.get("/logs/refresh-stats")
 def download_refresh_stats():
-    path = Path(REFRESH_STATS_PATH)
+    path = Path(REFRESH_STATS_PATH).resolve()
     if not path.exists():
-        abort(404)
+        return "尚無更新統計 —完成過一次價格更新後才會產生。", 404, {"Content-Type": "text/plain; charset=utf-8"}
     return send_file(path, as_attachment=True, download_name=path.name, mimetype="application/jsonl")
 
 

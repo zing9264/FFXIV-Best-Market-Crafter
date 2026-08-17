@@ -1,6 +1,18 @@
+"""從 Universalis 抓取價格並寫入 prices 表。
+
+2026-08 改版:改用 `/api/v2/aggregated/{world}/{ids}` 端點。
+- 舊版的區域聚合端點(`/繁中服/{ids}`)在 Universalis 端長期 504,
+  每一批都要靠重試硬磨,全量更新動輒數小時。
+- aggregated 端點以「世界」層級查詢時,單次回應同時帶 world/dc/region
+  三層資料 —— 一批一次呼叫就能同時取得「區域最低價(含來源伺服器)」
+  與「顯示伺服器價格」,請求數砍半、單次延遲從 10 秒級降到 1 秒內。
+- 代價:aggregated 不提供掛單數(listings),該欄位固定寫 0;
+  「近三天成交筆數」改以 dailySaleVelocity * 3 估算。
+"""
 from __future__ import annotations
 
 import asyncio
+import csv
 import time
 from collections import Counter
 from typing import Callable, Iterable, List, Optional
@@ -21,29 +33,24 @@ from db import get_conn, init_db
 
 
 def _load_materia_item_ids() -> List[int]:
-    """Pull materia item_ids out of data/materia_stats.csv.
-
-    Most crafting materia (巨匠/名匠/魔匠 series) aren't ingredients in any
-    recipe, so they wouldn't otherwise be touched by the full price refresh.
-    Including them here keeps the materia optimizer's prices in sync with
-    every full update. Returns an empty list if the CSV is missing.
-    """
-    import csv
-    from pathlib import Path
-
-    path = Path(__file__).resolve().parent / "data" / "materia_stats.csv"
-    if not path.exists():
+    """Pull materia item_ids out of data/materia_stats.csv."""
+    try:
+        from materia_optimizer import MATERIA_STATS_PATH
+    except Exception:
         return []
-    ids: list[int] = []
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            try:
-                iid = int((row.get("item_id") or "").strip())
-            except (TypeError, ValueError):
-                continue
-            if iid > 0:
-                ids.append(iid)
+    ids: List[int] = []
+    try:
+        with open(MATERIA_STATS_PATH, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    iid = int((row.get("item_id") or "").strip())
+                except (TypeError, ValueError):
+                    continue
+                if iid > 0:
+                    ids.append(iid)
+    except OSError:
+        return []
     return ids
 
 
@@ -56,10 +63,10 @@ def get_item_ids(conn) -> List[int]:
         SELECT DISTINCT ingredient_item_id FROM recipe_ingredients
         """
     )
-    ids = [row[0] for row in cur.fetchall()]
-    ids.extend(EXTRA_ITEM_IDS)
+    ids = [int(row[0]) for row in cur.fetchall() if row[0]]
     ids.extend(_load_materia_item_ids())
-    return sorted(set(i for i in ids if isinstance(i, int) and i > 0))
+    ids.extend(EXTRA_ITEM_IDS)
+    return sorted(set(i for i in ids if i > 0))
 
 
 def batch_ids(ids: List[int], size: int) -> List[List[int]]:
@@ -69,197 +76,237 @@ def batch_ids(ids: List[int], size: int) -> List[List[int]]:
 def normalize_timestamp(ts: Optional[int]) -> Optional[int]:
     if ts is None:
         return None
-    if not isinstance(ts, (int, float)):
+    try:
+        value = int(ts)
+    except (TypeError, ValueError):
         return None
-    ts = int(ts)
-    # Convert ms to seconds if needed
-    if ts > 1_000_000_000_000:
-        return ts // 1000
-    return ts
-
-
-def count_recent_sales(recent_history: list[dict], days: int = 3) -> int:
-    if not isinstance(recent_history, list) or not recent_history:
-        return 0
-    now = int(time.time())
-    cutoff = now - (days * 24 * 60 * 60)
-    count = 0
-    for row in recent_history:
-        if not isinstance(row, dict):
-            continue
-        ts = normalize_timestamp(first_key(row, ["timestamp", "Timestamp"]))
-        if ts is not None and ts >= cutoff:
-            count += 1
-    return count
-
-
-def first_key(d: dict, keys: Iterable[str]):
-    for k in keys:
-        if k in d and d[k] is not None:
-            return d[k]
-    return None
-
-
-def extract_items(payload) -> List[dict]:
-    if isinstance(payload, list):
-        return payload
-    if isinstance(payload, dict):
-        items = payload.get("items")
-        if isinstance(items, list):
-            return items
-        if isinstance(items, dict):
-            return list(items.values())
-        if "itemID" in payload or "itemId" in payload or "item_id" in payload:
-            return [payload]
-    return []
-
-
-def first_nested_key(values: Iterable[object], keys: Iterable[str]):
-    for value in values:
-        if isinstance(value, dict):
-            result = first_key(value, keys)
-            if result is not None:
-                return result
-    return None
+    if value > 10**12:  # 毫秒 -> 秒
+        value //= 1000
+    return value
 
 
 class RateLimiter:
     def __init__(self, rps: float):
-        self.min_interval = 1.0 / rps if rps > 0 else 0
-        self._lock = asyncio.Lock()
+        self._interval = 1.0 / rps if rps > 0 else 0
         self._last = 0.0
+        self._lock = asyncio.Lock()
 
     async def wait(self):
-        if self.min_interval <= 0:
+        if self._interval <= 0:
             return
         async with self._lock:
             now = time.monotonic()
-            delta = now - self._last
-            if delta < self.min_interval:
-                await asyncio.sleep(self.min_interval - delta)
+            delay = self._interval - (now - self._last)
+            if delay > 0:
+                await asyncio.sleep(delay)
             self._last = time.monotonic()
 
 
-async def fetch_prices(session: aiohttp.ClientSession, limiter: RateLimiter, ids: List[int], world: str):
+async def fetch_marketable_ids(session: aiohttp.ClientSession) -> Optional[set[int]]:
+    """Universalis 的可交易道具清單。不可交易的 id 會讓 aggregated 整批 400。"""
+    try:
+        async with session.get(
+            f"{UNIVERSALIS_BASE_URL}/marketable", timeout=aiohttp.ClientTimeout(total=15)
+        ) as resp:
+            resp.raise_for_status()
+            payload = await resp.json()
+            return {int(i) for i in payload}
+    except Exception:
+        return None  # 拿不到就不過濾,靠 400 對切降級
+
+
+async def fetch_world_names(session: aiohttp.ClientSession) -> dict[int, str]:
+    """抓 world_id -> 名稱對照(區域最低價要標示來源伺服器)。失敗回空表。"""
+    try:
+        async with session.get(
+            f"{UNIVERSALIS_BASE_URL}/worlds", timeout=aiohttp.ClientTimeout(total=15)
+        ) as resp:
+            resp.raise_for_status()
+            payload = await resp.json()
+            return {int(w["id"]): str(w["name"]) for w in payload if w.get("id") is not None}
+    except Exception:
+        return {}
+
+
+async def fetch_aggregated(
+    session: aiohttp.ClientSession, limiter: RateLimiter, ids: List[int], world: str
+):
     await limiter.wait()
     ids_param = ",".join(str(i) for i in ids)
-    url = f"{UNIVERSALIS_BASE_URL}/{world}/{ids_param}"
+    url = f"{UNIVERSALIS_BASE_URL}/aggregated/{world}/{ids_param}"
     async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
         resp.raise_for_status()
         return await resp.json()
 
 
-async def fetch_history(session: aiohttp.ClientSession, limiter: RateLimiter, ids: List[int], world: str):
-    await limiter.wait()
-    ids_param = ",".join(str(i) for i in ids)
-    url = f"{UNIVERSALIS_BASE_URL}/history/{world}/{ids_param}"
-    async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-        resp.raise_for_status()
-        return await resp.json()
+def _layer(entry: Optional[dict], layer: str) -> dict:
+    if not isinstance(entry, dict):
+        return {}
+    value = entry.get(layer)
+    return value if isinstance(value, dict) else {}
 
 
-def build_price_row(price_item: dict, history_item: dict, world: str):
-    item_id = first_key(price_item, ["itemID", "itemId", "item_id"]) or first_key(
-        history_item, ["itemID", "itemId", "item_id"]
-    )
+def _min_listing(quality_blocks: List[dict], layer: str) -> tuple[Optional[float], Optional[int]]:
+    """nq/hq 取較低的 minListing,回 (price, world_id)。"""
+    best_price: Optional[float] = None
+    best_world: Optional[int] = None
+    for block in quality_blocks:
+        info = _layer(block.get("minListing"), layer)
+        price = info.get("price")
+        if price is None:
+            continue
+        if best_price is None or price < best_price:
+            best_price = float(price)
+            best_world = info.get("worldId")
+    return best_price, best_world
+
+
+def _recent_purchase(quality_blocks: List[dict], layer: str) -> Optional[float]:
+    """nq/hq 取時間較新的 recentPurchase 價格。"""
+    best_ts = -1
+    best_price: Optional[float] = None
+    for block in quality_blocks:
+        info = _layer(block.get("recentPurchase"), layer)
+        price = info.get("price")
+        ts = info.get("timestamp") or 0
+        if price is None:
+            continue
+        if ts >= best_ts:
+            best_ts = ts
+            best_price = float(price)
+    return best_price
+
+
+def _daily_velocity(quality_blocks: List[dict], layer: str) -> float:
+    total = 0.0
+    for block in quality_blocks:
+        info = _layer(block.get("dailySaleVelocity"), layer)
+        qty = info.get("quantity")
+        if qty:
+            total += float(qty)
+    return total
+
+
+def _average_price(quality_blocks: List[dict], layer: str) -> Optional[float]:
+    for block in quality_blocks:
+        info = _layer(block.get("averageSalePrice"), layer)
+        if info.get("price") is not None:
+            return float(info["price"])
+    return None
+
+
+def build_rows_from_aggregated(
+    item: dict,
+    display_world: str,
+    world_names: dict[int, str],
+    region_label: str = LOWEST_WORLD,
+) -> List[tuple]:
+    """單筆 aggregated 結果 -> 兩列 prices(區域口徑 + 顯示伺服器口徑)。"""
+    item_id = item.get("itemId") or item.get("itemID")
     if not item_id:
-        return None
+        return []
 
-    p50 = first_key(price_item, ["p50", "p50Price", "p50_price"])
-    min_price = first_key(price_item, ["minPrice", "min_price"])
-    listings = price_item.get("listings")
-    if isinstance(listings, list):
-        listings = len(listings)
-    if listings is None:
-        listings = price_item.get("listingsCount")
+    quality_blocks = [b for b in (item.get("nq"), item.get("hq")) if isinstance(b, dict)]
+    if not quality_blocks:
+        return []
 
-    history_entries = history_item.get("entries", []) or []
-    daily_sales = count_recent_sales(history_entries, days=3)
+    upload_times = [
+        normalize_timestamp(entry.get("timestamp"))
+        for entry in item.get("worldUploadTimes", []) or []
+        if isinstance(entry, dict)
+    ]
+    last_updated = max((t for t in upload_times if t), default=0)
 
-    price_last_updated = normalize_timestamp(
-        first_key(price_item, ["lastUploadTime", "lastUpload", "lastUpdated", "last_updated"])
-    )
-    history_last_updated = normalize_timestamp(
-        first_key(history_item, ["lastUploadTime", "lastUpload", "lastUpdated", "last_updated"])
-    )
-    last_updated_candidates = [value for value in [price_last_updated, history_last_updated] if value is not None]
-    last_updated = max(last_updated_candidates) if last_updated_candidates else None
-
-    world_id = (
-        price_item.get("worldID")
-        or price_item.get("worldId")
-        or history_item.get("worldID")
-        or history_item.get("worldId")
-    )
-    world_name = first_key(price_item, ["worldName", "world", "world_name"])
-    if not world_name:
-        world_name = first_key(history_item, ["worldName", "world", "world_name"])
-    if not world_name:
-        world_name = first_nested_key(price_item.get("listings", []), ["worldName", "world_name"])
-
-    sale_price = first_nested_key(
-        history_entries,
-        ["pricePerUnit", "price", "total"],
+    display_world_id = next(
+        (wid for wid, name in world_names.items() if name == display_world), 0
     )
 
-    return (
-        int(item_id),
-        world,
-        int(world_id) if isinstance(world_id, int) else 0,
-        str(world_name),
-        float(p50) if p50 is not None else 0,
-        float(min_price) if min_price is not None else 0,
-        float(sale_price) if sale_price is not None else 0,
-        int(listings) if listings is not None else 0,
-        float(daily_sales) if daily_sales is not None else 0,
-        int(last_updated) if last_updated is not None else 0,
-    )
+    rows: List[tuple] = []
+    for scope_label, layer in ((region_label, "region"), (display_world, "world")):
+        min_price, src_world_id = _min_listing(quality_blocks, layer)
+        sale_price = _recent_purchase(quality_blocks, layer)
+        velocity = _daily_velocity(quality_blocks, layer)
+        avg_price = _average_price(quality_blocks, layer)
+
+        if layer == "world":
+            world_id = display_world_id
+            world_name = display_world
+        else:
+            world_id = int(src_world_id) if src_world_id else 0
+            world_name = world_names.get(world_id, str(world_id) if world_id else "")
+
+        if min_price is None and sale_price is None:
+            continue  # 該層無任何資料就不覆蓋舊值
+
+        rows.append(
+            (
+                int(item_id),
+                scope_label,
+                world_id,
+                world_name,
+                float(avg_price) if avg_price is not None else 0,
+                float(min_price) if min_price is not None else 0,
+                float(sale_price) if sale_price is not None else 0,
+                0,  # aggregated 不提供掛單數
+                round(velocity * 3, 1),  # 近三天成交估計 = 日均成交量 * 3
+                int(last_updated) if last_updated else 0,
+            )
+        )
+    return rows
 
 
 async def fetch_batch_rows(
     session: aiohttp.ClientSession,
     limiter: RateLimiter,
     ids: List[int],
-    world: str,
+    display_world: str,
+    world_names: dict[int, str],
     retry_limit: int = 3,
     stats: Optional[Counter] = None,
-):
+) -> List[tuple]:
     try:
-        prices_payload, history_payload = await asyncio.gather(
-            fetch_prices(session, limiter, ids, world),
-            fetch_history(session, limiter, ids, world),
-        )
-        price_items = {
-            int(item["itemID"]): item
-            for item in extract_items(prices_payload)
-            if isinstance(item, dict) and item.get("itemID")
-        }
-        history_items = {
-            int(item["itemID"]): item
-            for item in extract_items(history_payload)
-            if isinstance(item, dict) and item.get("itemID")
-        }
-        rows = []
-        for item_id in sorted(set(price_items) | set(history_items)):
-            row = build_price_row(price_items.get(item_id, {}), history_items.get(item_id, {}), world)
-            if row is not None:
-                rows.append(row)
+        payload = await fetch_aggregated(session, limiter, ids, display_world)
+        rows: List[tuple] = []
+        for item in payload.get("results", []) or []:
+            rows.extend(build_rows_from_aggregated(item, display_world, world_names))
         return rows
     except aiohttp.ClientResponseError as exc:
         if stats is not None:
             stats[f"http_{exc.status}"] += 1
+        if exc.status == 400:
+            # 批內含不可交易道具:對切縮小範圍,單顆仍 400 就跳過該道具
+            if len(ids) > 1:
+                if stats is not None:
+                    stats["splits"] += 1
+                midpoint = len(ids) // 2
+                left = await fetch_batch_rows(
+                    session, limiter, ids[:midpoint], display_world, world_names, retry_limit, stats=stats
+                )
+                right = await fetch_batch_rows(
+                    session, limiter, ids[midpoint:], display_world, world_names, retry_limit, stats=stats
+                )
+                return left + right
+            if stats is not None:
+                stats["skipped_unmarketable"] += 1
+            return []
         if exc.status in {429, 500, 502, 503, 504}:
             if retry_limit > 0:
                 if stats is not None:
                     stats["retries"] += 1
                 await asyncio.sleep((4 - retry_limit) * 1.5 + 1)
-                return await fetch_batch_rows(session, limiter, ids, world, retry_limit - 1, stats=stats)
+                return await fetch_batch_rows(
+                    session, limiter, ids, display_world, world_names, retry_limit - 1, stats=stats
+                )
             if len(ids) > 1:
                 if stats is not None:
                     stats["splits"] += 1
                 midpoint = len(ids) // 2
-                left = await fetch_batch_rows(session, limiter, ids[:midpoint], world, 2, stats=stats)
-                right = await fetch_batch_rows(session, limiter, ids[midpoint:], world, 2, stats=stats)
+                left = await fetch_batch_rows(
+                    session, limiter, ids[:midpoint], display_world, world_names, 2, stats=stats
+                )
+                right = await fetch_batch_rows(
+                    session, limiter, ids[midpoint:], display_world, world_names, 2, stats=stats
+                )
                 return left + right
         raise
     except asyncio.TimeoutError:
@@ -269,7 +316,9 @@ async def fetch_batch_rows(
             if stats is not None:
                 stats["retries"] += 1
             await asyncio.sleep((4 - retry_limit) * 1.5 + 1)
-            return await fetch_batch_rows(session, limiter, ids, world, retry_limit - 1, stats=stats)
+            return await fetch_batch_rows(
+                session, limiter, ids, display_world, world_names, retry_limit - 1, stats=stats
+            )
         raise
     except aiohttp.ClientError:
         if stats is not None:
@@ -278,16 +327,24 @@ async def fetch_batch_rows(
             if stats is not None:
                 stats["retries"] += 1
             await asyncio.sleep((4 - retry_limit) * 1.5 + 1)
-            return await fetch_batch_rows(session, limiter, ids, world, retry_limit - 1, stats=stats)
+            return await fetch_batch_rows(
+                session, limiter, ids, display_world, world_names, retry_limit - 1, stats=stats
+            )
         raise
 
 
 async def update_prices_async(
     ids: Optional[List[int]] = None,
-    world: str = WORLD,
+    world: str = DISPLAY_WORLD,
     progress_callback: Optional[Callable[[dict], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
 ):
+    """單趟更新:以 world(顯示伺服器)查 aggregated,同時落區域與該伺服器兩種口徑。"""
+    display_world = world or DISPLAY_WORLD
+    if display_world == LOWEST_WORLD:
+        # 傳進來的是區域名(舊呼叫習慣):改用預設顯示伺服器查詢,區域層照樣會拿到
+        display_world = DISPLAY_WORLD
+
     if not ids:
         init_db()
         with get_conn() as conn:
@@ -297,6 +354,7 @@ async def update_prices_async(
         print("No item IDs found. Import recipes first.")
         return
 
+    scope_label = f"{LOWEST_WORLD}+{display_world}"
     batches = batch_ids(ids, MAX_BATCH_SIZE)
     limiter = RateLimiter(MAX_RPS)
     sem = asyncio.Semaphore(MAX_CONCURRENCY)
@@ -305,18 +363,23 @@ async def update_prices_async(
     completed_batches = 0
     stats: Counter = Counter()
 
-    if progress_callback:
-        progress_callback(
-            {
-                "phase": "fetching_prices",
-                "world": world,
-                "total_ids": len(ids),
-                "total_batches": len(batches),
-                "completed_batches": 0,
-                "updated_rows": 0,
-                "stats": dict(stats),
-            }
-        )
+    def report(extra: Optional[dict] = None) -> None:
+        if not progress_callback:
+            return
+        payload = {
+            "phase": "fetching_prices",
+            "world": scope_label,
+            "total_ids": len(ids),
+            "total_batches": len(batches),
+            "completed_batches": completed_batches,
+            "updated_rows": updated_rows,
+            "stats": dict(stats),
+        }
+        if extra:
+            payload.update(extra)
+        progress_callback(payload)
+
+    report()
 
     def persist_rows(rows: List[tuple]) -> None:
         if not rows:
@@ -332,7 +395,20 @@ async def update_prices_async(
                 rows,
             )
 
-    async with aiohttp.ClientSession() as session:
+    # 表明身分的 User-Agent:讓 Universalis 端能辨識與統計本工具的流量(社群禮儀)
+    headers = {"User-Agent": "BestMarketCrafter/1.1 (+https://github.com/zing9264/FFXIV-Best-Market-Crafter)"}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        world_names = await fetch_world_names(session)
+        marketable = await fetch_marketable_ids(session)
+        if marketable:
+            before = len(ids)
+            ids = [i for i in ids if i in marketable]
+            dropped = before - len(ids)
+            if dropped:
+                stats["unmarketable_filtered"] = dropped
+            batches = batch_ids(ids, MAX_BATCH_SIZE)
+            report()
+
         async def worker(batch):
             nonlocal updated_rows, completed_batches
             if should_cancel and should_cancel():
@@ -340,49 +416,33 @@ async def update_prices_async(
             async with sem:
                 if should_cancel and should_cancel():
                     return
-                rows = await fetch_batch_rows(session, limiter, batch, world, stats=stats)
+                rows = await fetch_batch_rows(
+                    session, limiter, batch, display_world, world_names, stats=stats
+                )
                 async with db_lock:
                     persist_rows(rows)
                     updated_rows += len(rows)
                     completed_batches += 1
-                    if progress_callback:
-                        progress_callback(
-                            {
-                                "phase": "fetching_prices",
-                                "world": world,
-                                "total_ids": len(ids),
-                                "total_batches": len(batches),
-                                "completed_batches": completed_batches,
-                                "updated_rows": updated_rows,
-                                "last_batch_size": len(batch),
-                                "stats": dict(stats),
-                            }
-                        )
+                    report({"last_batch_size": len(batch)})
 
         tasks = [asyncio.create_task(worker(batch)) for batch in batches]
         await asyncio.gather(*tasks)
 
-    print(f"Updated prices: {updated_rows} items for world {world}")
-    if progress_callback:
-        progress_callback(
-            {
-                "phase": "fetching_prices",
-                "world": world,
-                "total_ids": len(ids),
-                "total_batches": len(batches),
-                "completed_batches": completed_batches,
-                "updated_rows": updated_rows,
-                "stats": dict(stats),
-            }
-        )
+    print(f"Updated prices: {updated_rows} rows ({scope_label})")
+    report()
     return updated_rows
 
 
-async def update_all_prices_async(progress_callback: Optional[Callable[[dict], None]] = None) -> int:
-    total = 0
-    for world in [LOWEST_WORLD, DISPLAY_WORLD]:
-        total += int(await update_prices_async(world=world, progress_callback=progress_callback) or 0)
-    return total
+async def update_all_prices_async(
+    progress_callback: Optional[Callable[[dict], None]] = None,
+    display_world: Optional[str] = None,
+) -> int:
+    return int(
+        await update_prices_async(
+            world=display_world or DISPLAY_WORLD, progress_callback=progress_callback
+        )
+        or 0
+    )
 
 
 def update_prices():
@@ -390,11 +450,9 @@ def update_prices():
 
 
 def update_prices_for_worlds(ids: List[int], worlds: List[str]) -> int:
-    unique_worlds = [world for world in dict.fromkeys(worlds) if world]
-    total = 0
-    for world in unique_worlds:
-        total += update_prices_for_ids(ids, world=world)
-    return total
+    """相容舊介面:worlds 內的非區域名視為顯示伺服器,單趟同時落兩口徑。"""
+    display = next((w for w in worlds if w and w != LOWEST_WORLD), DISPLAY_WORLD)
+    return update_prices_for_ids(ids, world=display)
 
 
 def update_prices_for_ids(ids: List[int], world: str = WORLD) -> int:

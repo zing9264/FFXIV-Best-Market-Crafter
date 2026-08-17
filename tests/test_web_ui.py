@@ -178,11 +178,15 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
 
         import config
         import db
+        import import_collectable_rewards
         import update_prices
         import web_ui
 
         cls.config = importlib.reload(config)
         cls.db = importlib.reload(db)
+        # import_collectable_rewards 在 import 時綁定 CSV 路徑,漏掉 reload 會在
+        # 「其他測試模組先 import 過 config」時綁到預設路徑,把 fixture 蓋掉
+        importlib.reload(import_collectable_rewards)
         cls.update_prices = importlib.reload(update_prices)
         cls.web_ui = importlib.reload(web_ui)
         cls.app = cls.web_ui.app
@@ -426,14 +430,19 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
         finally:
             response.close()
 
-    def test_count_recent_sales_uses_history_entries(self):
-        now = int(time.time())
-        entries = [
-            {"timestamp": now - (1 * 24 * 60 * 60)},
-            {"timestamp": now - (2 * 24 * 60 * 60)},
-            {"timestamp": now - (4 * 24 * 60 * 60)},
-        ]
-        self.assertEqual(self.update_prices.count_recent_sales(entries, days=3), 2)
+    def test_daily_sales_estimated_from_sale_velocity(self):
+        # aggregated 端點改以日均成交量估算「近三天成交筆數」(velocity * 3)
+        item = {
+            "itemId": 5333,
+            "nq": {
+                "minListing": {"region": {"price": 10, "worldId": 4031}, "world": {"price": 12}},
+                "dailySaleVelocity": {"region": {"quantity": 8.0}, "world": {"quantity": 2.0}},
+            },
+        }
+        rows = self.update_prices.build_rows_from_aggregated(item, "鳳凰", {4031: "鳳凰"})
+        by_scope = {row[1]: row for row in rows}
+        self.assertEqual(by_scope["繁中服"][8], 24.0)
+        self.assertEqual(by_scope["鳳凰"][8], 6.0)
 
     def test_download_refresh_stats_returns_file(self):
         client = self.app.test_client()
