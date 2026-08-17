@@ -67,3 +67,4 @@ python -m PyInstaller BestMarketCrafter.spec
 
 - **v1.2(已定案 2026-08-18)**: (1) 托盤常駐時每日自動全量更新(啟動時資料逾一日也補跑),使用者免手動;(2) 顯示伺服器可選(settings 表 + UI 下拉,陸行鳥 DC worlds,取代寫死的鳳凰)。順路可做:rebuild_profits 的相關子查詢優化(目前約 35 秒)
 - **遠期**: Universalis WebSocket 訂閱 + 追加式價格觀測表(歷史走勢圖)—「每日一次」需求下暫不做,等要做走勢功能時一起上
+- **程式碼簽章**: 已決定不弄(2026-08-18)—非營利、使用者僅親友,SmartScreen 靠「仍要執行」即可。若未來公開發布再評估 Azure Trusted Signing(個人約 US$10/月)
