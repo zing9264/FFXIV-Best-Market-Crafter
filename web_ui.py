@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
+import logging
 import math
 import threading
 import time
@@ -43,6 +44,15 @@ from update_profits import rebuild_profits
 app = Flask(__name__)
 init_db()
 import_collectable_rewards()
+
+
+class _RefreshStatusLogFilter(logging.Filter):
+    # 前端會定期輪詢 /refresh-status 更新進度面板,這類存取紀錄會淹沒有意義的請求
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/refresh-status" not in record.getMessage()
+
+
+logging.getLogger("werkzeug").addFilter(_RefreshStatusLogFilter())
 
 CRAFT_TYPE_NAMES = {
     0: "木工",

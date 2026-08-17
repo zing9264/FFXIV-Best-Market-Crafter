@@ -1403,10 +1403,17 @@
         const errorEl = document.getElementById("refresh-error");
         errorEl.textContent = state.error || "";
         errorEl.style.display = state.error ? "block" : "none";
+        refreshPollDelay = state.running ? 2000 : 20000;
       } catch (_err) {
       }
     };
-    setInterval(syncRefreshState, 2000);
+    // 更新進行中每 2 秒輪詢一次,閒置時降頻到 20 秒
+    let refreshPollDelay = 2000;
+    const pollRefreshState = async () => {
+      await syncRefreshState();
+      setTimeout(pollRefreshState, refreshPollDelay);
+    };
+    pollRefreshState();
     </script>
   </body>
 </html>
