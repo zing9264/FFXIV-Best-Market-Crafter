@@ -144,6 +144,8 @@ def main() -> None:
 
     import web_ui
 
+    web_ui.start_auto_refresh_scheduler()  # 每日自動更新(托盤常駐時背景執行)
+
     threading.Thread(
         target=lambda: web_ui.app.run(host=host, port=port, debug=False, use_reloader=False),
         daemon=True,

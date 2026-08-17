@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import logging
 import math
+import os
 import threading
 import time
 import traceback
@@ -24,7 +25,7 @@ from config import (
     RECIPE_REFRESH_COOLDOWN_SECONDS,
     REFRESH_STATS_PATH,
 )
-from db import get_conn, init_db
+from db import get_conn, get_setting, init_db, set_setting
 from import_collectable_rewards import import_collectable_rewards
 from materia_optimizer import (
     STAT_KEYS,
@@ -65,10 +66,22 @@ CRAFT_TYPE_NAMES = {
     7: "烹調",
 }
 
-PRICE_SCOPE_CHOICES = {
-    "all": {"world": LOWEST_WORLD, "label": "全伺服器"},
-    "phoenix": {"world": DISPLAY_WORLD, "label": DISPLAY_WORLD},
-}
+# 陸行鳥 DC(繁中服)全部世界 —伺服器下拉選單的後備清單
+TW_WORLD_CHOICES = ["伊弗利特", "迦樓羅", "利維坦", "鳳凰", "奧汀", "巴哈姆特", "拉姆", "泰坦"]
+
+
+def get_display_world() -> str:
+    """顯示伺服器:使用者設定優先,回退 config 預設。"""
+    return get_setting("display_world") or DISPLAY_WORLD
+
+
+def price_scope_choices() -> dict:
+    display = get_display_world()
+    # key 維持 "phoenix" 以保 URL 參數相容,語義為「顯示伺服器」
+    return {
+        "all": {"world": LOWEST_WORLD, "label": "全伺服器"},
+        "phoenix": {"world": display, "label": display},
+    }
 
 refresh_state_lock = threading.Lock()
 refresh_thread: threading.Thread | None = None
@@ -133,7 +146,7 @@ def normalize_nonzero_value(value: float | None) -> float | None:
 
 def parse_price_scope(value: str | None) -> str:
     key = (value or "all").strip().lower()
-    return key if key in PRICE_SCOPE_CHOICES else "all"
+    return key if key in {"all", "phoenix"} else "all"
 
 
 def ensure_parent_dir(path_str: str) -> Path:
@@ -222,7 +235,7 @@ def start_full_refresh_job() -> bool:
     append_app_log("開始全量更新")
     append_refresh_stats(
         "refresh_started",
-        worlds=[LOWEST_WORLD, DISPLAY_WORLD],
+        worlds=[LOWEST_WORLD, get_display_world()],
     )
     refresh_thread = threading.Thread(target=run_full_refresh_job, daemon=True)
     refresh_thread.start()
@@ -231,7 +244,8 @@ def start_full_refresh_job() -> bool:
 
 def run_full_refresh_job() -> None:
     # aggregated 端點單趟同時取得區域最低價與顯示伺服器價格,不再逐 world 跑兩輪
-    scope_label = f"{LOWEST_WORLD}+{DISPLAY_WORLD}"
+    display_world = get_display_world()
+    scope_label = f"{LOWEST_WORLD}+{display_world}"
     total_updated = 0
 
     try:
@@ -274,7 +288,7 @@ def run_full_refresh_job() -> None:
         total_updated = int(
             asyncio.run(
                 update_prices_async(
-                    world=DISPLAY_WORLD,
+                    world=display_world,
                     progress_callback=on_progress,
                     should_cancel=is_cancel_requested,
                 )
@@ -313,11 +327,12 @@ def run_full_refresh_job() -> None:
         update_refresh_state(
             phase="rebuilding_profits",
             message="價格更新完成，正在重算總價差",
-            world=DISPLAY_WORLD,
+            world=display_world,
             total_batches=0,
             completed_batches=0,
         )
-        profits_updated = rebuild_profits()
+        profits_updated = rebuild_profits(display_world)
+        set_setting("last_full_refresh_at", int(time.time()))
         append_app_log(f"全量更新完成，價格 {total_updated} 筆，價差 {profits_updated} 筆")
         append_refresh_stats(
             "refresh_finished",
@@ -329,11 +344,15 @@ def run_full_refresh_job() -> None:
             cancel_requested=False,
             phase="done",
             message="全量更新完成",
-            world=DISPLAY_WORLD,
+            world=display_world,
             updated_rows=total_updated,
             profits_updated=profits_updated,
             finished_at=time.time(),
         )
+        if get_display_world() != display_world:
+            # 更新途中使用者換了顯示伺服器,這輪寫入的是舊口徑,補跑一輪換血
+            append_app_log(f"更新期間顯示伺服器已改為 {get_display_world()}，補跑一輪全量更新")
+            start_full_refresh_job()
     except Exception as exc:
         append_app_log(f"全量更新失敗：{exc}")
         append_refresh_stats(
@@ -359,7 +378,7 @@ def get_counts(conn):
     ingredients_count = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM prices WHERE world=?;", (LOWEST_WORLD,))
     lowest_prices_count = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM prices WHERE world=?;", (DISPLAY_WORLD,))
+    cur.execute("SELECT COUNT(*) FROM prices WHERE world=?;", (get_display_world(),))
     display_prices_count = cur.fetchone()[0]
     return {
         "recipes": recipes_count,
@@ -512,7 +531,7 @@ def load_recipe_detail(conn, item_id: int):
         LEFT JOIN prices dp ON dp.item_id = i.item_id AND dp.world = ?
         WHERE i.item_id = ?;
         """,
-        (DISPLAY_WORLD, item_id),
+        (get_display_world(), item_id),
     )
     row = cur.fetchone()
     if not row:
@@ -543,7 +562,7 @@ def load_recipe_detail(conn, item_id: int):
         WHERE ri.output_item_id = ?
         ORDER BY ri.qty DESC, ri.ingredient_item_id ASC;
         """,
-        (LOWEST_WORLD, DISPLAY_WORLD, item_id),
+        (LOWEST_WORLD, get_display_world(), item_id),
     )
 
     ingredients = []
@@ -572,7 +591,7 @@ def load_recipe_detail(conn, item_id: int):
                 "lowest_world_name": ing[3] or "-",
                 "lowest_price": normalize_nonzero_value(ing[4]),
                 "display_price": normalize_nonzero_value(ing[5]),
-                "display_world_name": ing[6] or DISPLAY_WORLD,
+                "display_world_name": ing[6] or get_display_world(),
                 "unit_price": unit_price,
                 "line_total": line_total,
                 "listings": ing[7],
@@ -599,7 +618,7 @@ def load_recipe_detail(conn, item_id: int):
         "yield": yield_qty,
         "has_recipe": has_recipe,
         "product": {
-            "world_name": row[3] or DISPLAY_WORLD,
+            "world_name": row[3] or get_display_world(),
             "min_price": row[4],
             "sale_price": product_sale_price,
             "sell_price": product_sell_price,
@@ -612,7 +631,7 @@ def load_recipe_detail(conn, item_id: int):
         "display_materials_total": display_materials_total if has_all_display_prices else None,
         "unit_material_cost": unit_material_cost,
         "price_gap": price_gap,
-        "display_world": DISPLAY_WORLD,
+        "display_world": get_display_world(),
         "lowest_world": LOWEST_WORLD,
     }
 
@@ -699,7 +718,7 @@ def get_collectable_rows(
         )
         ORDER BY cost_per_scrip {order}, cr.item_id ASC;
         """,
-        (pricing_world, DISPLAY_WORLD),
+        (pricing_world, get_display_world()),
     )
     rows = []
     for row in cur.fetchall():
@@ -892,7 +911,7 @@ def get_top_profit_rows(
                 "name": row[1] or f"Item {row[0]}",
                 "yield": row[2] or 1,
                 "sell_price": normalize_nonzero_value(row[3]),
-                "world_name": row[4] or DISPLAY_WORLD,
+                "world_name": row[4] or get_display_world(),
                 "daily_sales": normalize_nonzero_value(row[5]),
                 "unit_material_cost": row[6],
                 "display_unit_material_cost": normalize_nonzero_value(row[7]),
@@ -922,8 +941,9 @@ def load_dashboard_data():
     min_past_margin_pct = parse_nonnegative_float(request.args.get("min_past_margin_pct", "0"), default=0.0)
     min_listing_price = parse_nonnegative_float(request.args.get("min_listing_price", "0"), default=0.0)
     price_scope = parse_price_scope(request.args.get("price_scope", "all"))
-    price_scope_world = PRICE_SCOPE_CHOICES[price_scope]["world"]
-    price_scope_label = PRICE_SCOPE_CHOICES[price_scope]["label"]
+    scope_choices = price_scope_choices()
+    price_scope_world = scope_choices[price_scope]["world"]
+    price_scope_label = scope_choices[price_scope]["label"]
     collectable_sort = request.args.get("collectable_sort", "desc").strip()
     if collectable_sort not in {"asc", "desc"}:
         collectable_sort = "desc"
@@ -1025,7 +1045,7 @@ def load_dashboard_data():
         if tab == "materia":
             all_materia = load_materia_stats()
             prices_for_interactive = get_materia_prices(
-                conn, DISPLAY_WORLD, fallback_world=LOWEST_WORLD
+                conn, get_display_world(), fallback_world=LOWEST_WORLD
             )
             materia_interactive_payload = {
                 "preset_key": materia_preset_key,
@@ -1073,7 +1093,7 @@ def load_dashboard_data():
             from time import perf_counter
 
             prices_map = get_materia_prices_flat(
-                conn, DISPLAY_WORLD, fallback_world=LOWEST_WORLD
+                conn, get_display_world(), fallback_world=LOWEST_WORLD
             )
             if not prices_map:
                 materia_error = (
@@ -1137,7 +1157,8 @@ def load_dashboard_data():
     total_pages = max(1, (total_profit_rows + per_page - 1) // per_page) if tab == "ranking" else 1
 
     return {
-        "display_world": DISPLAY_WORLD,
+        "display_world": get_display_world(),
+        "tw_world_choices": TW_WORLD_CHOICES,
         "lowest_world": LOWEST_WORLD,
         "db_path": DB_PATH,
         "counts": counts,
@@ -1155,7 +1176,7 @@ def load_dashboard_data():
         "ranking_sort": ranking_sort,
         "price_scope": price_scope,
         "price_scope_label": price_scope_label,
-        "price_scope_choices": PRICE_SCOPE_CHOICES,
+        "price_scope_choices": scope_choices,
         "collectables": collectables,
         "collectable_sort": collectable_sort,
         "collectable_scrip_type": collectable_scrip_type,
@@ -1222,7 +1243,7 @@ def refresh_recipe_prices():
         with get_conn() as conn:
             ids = get_recipe_item_ids(conn, item_id)
         mark_cooldown_triggered("last_recipe_refresh_at")
-        refreshed = update_prices_for_worlds(ids, [LOWEST_WORLD, DISPLAY_WORLD])
+        refreshed = update_prices_for_worlds(ids, [LOWEST_WORLD, get_display_world()])
         rebuild_profits()
         return redirect(url_for("index", tab=tab, q=query, item_id=item_id, refresh="ok", count=refreshed))
     except Exception:
@@ -1318,22 +1339,47 @@ def refresh_status():
     return jsonify(get_refresh_state_snapshot())
 
 
+def _tail_text_file(path: Path, max_lines: int = 500) -> str:
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    tail = lines[-max_lines:]
+    header = ""
+    if len(lines) > max_lines:
+        header = f"(僅顯示最後 {max_lines} 行,共 {len(lines)} 行)\n\n"
+    return header + "\n".join(tail) + "\n"
+
+
 @app.get("/logs/app")
-def download_app_log():
-    # 一律用絕對路徑:send_file 對相對路徑是以 Flask root_path 解析,
-    # 打包成 exe 後 root_path 會指向臨時解壓目錄而非工作目錄
+def view_app_log():
+    # 個人使用形態:網頁上直接看 log,不當附件下載。
+    # 一律用絕對路徑 —打包後 Flask root_path 指向 PyInstaller 臨時目錄
     path = Path(APP_LOG_PATH).resolve()
     if not path.exists():
         return "尚無 App Log —執行過更新等操作後才會產生。", 404, {"Content-Type": "text/plain; charset=utf-8"}
-    return send_file(path, as_attachment=True, download_name=path.name, mimetype="text/plain")
+    return _tail_text_file(path), 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
 @app.get("/logs/refresh-stats")
-def download_refresh_stats():
+def view_refresh_stats():
     path = Path(REFRESH_STATS_PATH).resolve()
     if not path.exists():
         return "尚無更新統計 —完成過一次價格更新後才會產生。", 404, {"Content-Type": "text/plain; charset=utf-8"}
-    return send_file(path, as_attachment=True, download_name=path.name, mimetype="application/jsonl")
+    return _tail_text_file(path), 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+@app.post("/settings/display-world")
+def set_display_world():
+    world = (request.form.get("world") or "").strip()
+    if world not in TW_WORLD_CHOICES:
+        return redirect(url_for("index", tab="lookup", refresh="error"))
+    changed = world != get_display_world()
+    set_setting("display_world", world)
+    append_app_log(f"顯示伺服器切換為 {world}")
+    if changed:
+        # 換伺服器後既有價格/價差是舊口徑,直接觸發一次全量更新換血
+        started = start_full_refresh_job()
+        status = "started" if started else "running"
+        return redirect(url_for("index", tab=request.form.get("tab", "lookup"), refresh=status))
+    return redirect(url_for("index", tab=request.form.get("tab", "lookup")))
 
 
 @app.route("/health")
@@ -1341,5 +1387,45 @@ def health():
     return {"ok": True}
 
 
+AUTO_REFRESH_HOURS = float(os.environ.get("FF14_AUTO_REFRESH_HOURS", "24"))
+_auto_refresh_thread: threading.Thread | None = None
+
+
+def _auto_refresh_due() -> bool:
+    if AUTO_REFRESH_HOURS <= 0:
+        return False
+    last = get_setting("last_full_refresh_at")
+    try:
+        last_ts = float(last) if last else 0.0
+    except (TypeError, ValueError):
+        last_ts = 0.0
+    return (time.time() - last_ts) >= AUTO_REFRESH_HOURS * 3600
+
+
+def _auto_refresh_loop() -> None:
+    # 啟動後先等一分鐘再做第一次檢查(讓伺服器與瀏覽器先就緒)
+    time.sleep(60)
+    while True:
+        try:
+            if _auto_refresh_due():
+                if start_full_refresh_job():
+                    append_app_log(f"自動更新觸發(間隔 {AUTO_REFRESH_HOURS:g} 小時)")
+        except Exception as exc:  # 排程器絕不讓例外殺掉執行緒
+            append_app_log(f"自動更新排程異常:{exc}")
+        time.sleep(30 * 60)
+
+
+def start_auto_refresh_scheduler() -> None:
+    """啟動每日自動更新排程(冪等)。由 __main__ 與 release 入口呼叫,測試不啟動。"""
+    global _auto_refresh_thread
+    if AUTO_REFRESH_HOURS <= 0:
+        return
+    if _auto_refresh_thread and _auto_refresh_thread.is_alive():
+        return
+    _auto_refresh_thread = threading.Thread(target=_auto_refresh_loop, daemon=True)
+    _auto_refresh_thread.start()
+
+
 if __name__ == "__main__":
+    start_auto_refresh_scheduler()
     app.run(host=APP_HOST, port=APP_PORT, debug=APP_DEBUG)

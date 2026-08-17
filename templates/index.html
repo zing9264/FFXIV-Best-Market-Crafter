@@ -392,7 +392,19 @@
 
       <section class="panel" style="margin-bottom: 18px;">
         <h2>全量價格更新</h2>
-        <p class="hint">這會依序更新 `{{ lowest_world }}` 與 `{{ display_world }}`，完成後再重算總價差。</p>
+        <p class="hint">單趟同時更新 `{{ lowest_world }}`(全區最低)與 `{{ display_world }}`(顯示伺服器)價格,完成後重算總價差,約 60 秒。托盤常駐時每日會自動更新一次。</p>
+        <form method="post" action="/settings/display-world" class="actions" style="margin-bottom: 14px; align-items: end;">
+          <input type="hidden" name="tab" value="{{ tab }}" />
+          <label class="hint" style="display: grid; gap: 6px;">
+            顯示伺服器(你的主伺服器)
+            <select name="world" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);">
+              {% for w in tw_world_choices %}
+                <option value="{{ w }}" {% if w == display_world %}selected{% endif %}>{{ w }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button class="btn ghost" type="submit">切換並更新價格</button>
+        </form>
         <div class="actions" style="margin-bottom: 14px;">
           <form method="post" action="/refresh-all-prices">
             <input type="hidden" name="tab" value="{{ tab }}" />
@@ -404,8 +416,8 @@
               <button class="btn ghost" type="submit">中斷更新</button>
             </form>
           {% endif %}
-          <a class="btn ghost" href="/logs/app">下載 App Log</a>
-          <a class="btn ghost" href="/logs/refresh-stats">下載更新 Stats</a>
+          <a class="btn ghost" href="/logs/app" target="_blank">檢視 App Log</a>
+          <a class="btn ghost" href="/logs/refresh-stats" target="_blank">檢視更新 Stats</a>
         </div>
         <div class="grid" style="margin-bottom: 0;">
           <div class="card">
@@ -545,8 +557,9 @@
                   var total = scope === 'all' ? allTotal : phoenixTotal;
                   var unit = total / yieldQty;
                   var gap = sellPrice !== null ? sellPrice - unit : null;
-                  document.getElementById('lookup-scope-btn').textContent = scope === 'all' ? '全伺服器' : '鳳凰';
-                  document.getElementById('lookup-scope-tag').textContent = scope === 'all' ? '（全伺服器）' : '（鳳凰）';
+                  var displayWorld = {{ detail.display_world | tojson if detail else '"鳳凰"' }};
+                  document.getElementById('lookup-scope-btn').textContent = scope === 'all' ? '全伺服器' : displayWorld;
+                  document.getElementById('lookup-scope-tag').textContent = scope === 'all' ? '（全伺服器）' : '（' + displayWorld + '）';
                   document.getElementById('lookup-materials-total').textContent = fmt(total);
                   document.getElementById('lookup-unit-cost').textContent = fmt(unit);
                   var gapEl = document.getElementById('lookup-price-gap');
@@ -675,7 +688,7 @@
                 物價口徑
                 <select name="price_scope" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);">
                   <option value="all" {% if price_scope == "all" %}selected{% endif %}>全伺服器</option>
-                  <option value="phoenix" {% if price_scope == "phoenix" %}selected{% endif %}>鳳凰</option>
+                  <option value="phoenix" {% if price_scope == "phoenix" %}selected{% endif %}>{{ display_world }}</option>
                 </select>
               </label>
               <label class="hint" style="display: grid; gap: 6px;">
@@ -1287,7 +1300,7 @@
       {% else %}
         <section class="panel">
           <h2>收藏品成本({{ collectable_scrip_label }})</h2>
-          <p class="hint">可切換 `全伺服器 / 鳳凰` 物價口徑來計算單件成本與{{ collectable_cost_label }}；另外固定顯示一欄 `單件成本({{ display_world }})` 方便對照。</p>
+          <p class="hint">可切換 `全伺服器 / {{ display_world }}` 物價口徑來計算單件成本與{{ collectable_cost_label }}；另外固定顯示一欄 `單件成本({{ display_world }})` 方便對照。</p>
 
           <form method="get" action="/" class="search-form" style="margin: 0 0 16px;">
             <input type="hidden" name="tab" value="collectables" />
@@ -1304,7 +1317,7 @@
                 物價口徑
                 <select name="price_scope" style="border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-strong);">
                   <option value="all" {% if price_scope == "all" %}selected{% endif %}>全伺服器</option>
-                  <option value="phoenix" {% if price_scope == "phoenix" %}selected{% endif %}>鳳凰</option>
+                  <option value="phoenix" {% if price_scope == "phoenix" %}selected{% endif %}>{{ display_world }}</option>
                 </select>
               </label>
               <button class="btn ghost" type="submit">套用排序</button>

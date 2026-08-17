@@ -418,14 +418,16 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("refresh=not_running", response.headers["Location"])
 
-    def test_download_app_log_returns_file(self):
+    def test_view_app_log_renders_inline(self):
+        # 個人使用形態:log 直接在網頁顯示,不是附件下載
         client = self.app.test_client()
         self.web_ui.append_app_log("測試 app log")
 
         response = client.get("/logs/app")
         try:
             self.assertEqual(response.status_code, 200)
-            self.assertIn("attachment", response.headers.get("Content-Disposition", ""))
+            self.assertNotIn("attachment", response.headers.get("Content-Disposition", ""))
+            self.assertIn("text/plain", response.headers.get("Content-Type", ""))
             self.assertIn("測試 app log", response.get_data(as_text=True))
         finally:
             response.close()
@@ -444,17 +446,47 @@ class RefreshRecipePricesRouteTests(unittest.TestCase):
         self.assertEqual(by_scope["繁中服"][8], 24.0)
         self.assertEqual(by_scope["鳳凰"][8], 6.0)
 
-    def test_download_refresh_stats_returns_file(self):
+    def test_view_refresh_stats_renders_inline(self):
         client = self.app.test_client()
         self.web_ui.append_refresh_stats("world_progress", world="繁中服", stats={"http_504": 2})
 
         response = client.get("/logs/refresh-stats")
         try:
             self.assertEqual(response.status_code, 200)
-            self.assertIn("attachment", response.headers.get("Content-Disposition", ""))
-            self.assertIn("\"event\": \"world_progress\"", response.get_data(as_text=True))
+            self.assertNotIn("attachment", response.headers.get("Content-Disposition", ""))
+            self.assertIn("world_progress", response.get_data(as_text=True))
         finally:
             response.close()
+
+    def test_display_world_setting_roundtrip_and_scope_labels(self):
+        # 切換顯示伺服器:設定寫入 + 口徑標籤跟著變
+        client = self.app.test_client()
+        self.assertEqual(self.web_ui.get_display_world(), "鳳凰")
+
+        response = client.post(
+            "/settings/display-world", data={"world": "巴哈姆特", "tab": "lookup"}
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.web_ui.get_display_world(), "巴哈姆特")
+        choices = self.web_ui.price_scope_choices()
+        self.assertEqual(choices["phoenix"]["label"], "巴哈姆特")
+
+        # 非法值被拒絕,設定不變
+        client.post("/settings/display-world", data={"world": "亂打的", "tab": "lookup"})
+        self.assertEqual(self.web_ui.get_display_world(), "巴哈姆特")
+
+        # 還原,避免影響其他測試
+        self.web_ui.set_setting("display_world", "鳳凰")
+
+    def test_auto_refresh_due_logic(self):
+        import time as _time
+
+        self.web_ui.set_setting("last_full_refresh_at", int(_time.time()))
+        self.assertFalse(self.web_ui._auto_refresh_due())
+        self.web_ui.set_setting(
+            "last_full_refresh_at", int(_time.time()) - int(self.web_ui.AUTO_REFRESH_HOURS * 3600) - 60
+        )
+        self.assertTrue(self.web_ui._auto_refresh_due())
 
 
 if __name__ == "__main__":

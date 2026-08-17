@@ -29,7 +29,12 @@ from config import (
     UNIVERSALIS_BASE_URL,
     WORLD,
 )
-from db import get_conn, init_db
+from db import get_conn, get_setting, init_db
+
+
+def resolve_display_world() -> str:
+    """顯示伺服器:使用者設定(settings 表)優先,回退 config 預設。"""
+    return get_setting("display_world") or DISPLAY_WORLD
 
 
 def _load_materia_item_ids() -> List[int]:
@@ -335,15 +340,15 @@ async def fetch_batch_rows(
 
 async def update_prices_async(
     ids: Optional[List[int]] = None,
-    world: str = DISPLAY_WORLD,
+    world: Optional[str] = None,
     progress_callback: Optional[Callable[[dict], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
 ):
     """單趟更新:以 world(顯示伺服器)查 aggregated,同時落區域與該伺服器兩種口徑。"""
-    display_world = world or DISPLAY_WORLD
+    display_world = world or resolve_display_world()
     if display_world == LOWEST_WORLD:
-        # 傳進來的是區域名(舊呼叫習慣):改用預設顯示伺服器查詢,區域層照樣會拿到
-        display_world = DISPLAY_WORLD
+        # 傳進來的是區域名(舊呼叫習慣):改用使用者設定的顯示伺服器查詢,區域層照樣會拿到
+        display_world = resolve_display_world()
 
     if not ids:
         init_db()
@@ -439,7 +444,7 @@ async def update_all_prices_async(
 ) -> int:
     return int(
         await update_prices_async(
-            world=display_world or DISPLAY_WORLD, progress_callback=progress_callback
+            world=display_world or resolve_display_world(), progress_callback=progress_callback
         )
         or 0
     )
@@ -451,7 +456,7 @@ def update_prices():
 
 def update_prices_for_worlds(ids: List[int], worlds: List[str]) -> int:
     """相容舊介面:worlds 內的非區域名視為顯示伺服器,單趟同時落兩口徑。"""
-    display = next((w for w in worlds if w and w != LOWEST_WORLD), DISPLAY_WORLD)
+    display = next((w for w in worlds if w and w != LOWEST_WORLD), resolve_display_world())
     return update_prices_for_ids(ids, world=display)
 
 

@@ -18,9 +18,36 @@ def get_conn():
         conn.close()
 
 
+def get_setting(key: str, default=None):
+    """讀 settings 表的單一鍵值;表不存在或無該鍵時回 default。"""
+    try:
+        with get_conn() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?;", (key,)).fetchone()
+            return row[0] if row else default
+    except Exception:
+        return default
+
+
+def set_setting(key: str, value) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?);",
+            (key, str(value)),
+        )
+
+
 def init_db():
     with get_conn() as conn:
         cur = conn.cursor()
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+            """
+        )
 
         cur.execute(
             """
@@ -217,3 +244,7 @@ def init_db():
             )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_profits_world_listing ON profits(world, profit_by_listing DESC);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_collectable_rewards_craft_type ON collectable_rewards(craft_type);")
+
+        # 統計資訊:沒有它,查詢優化器會為 profits 重算選出災難級 JOIN 順序
+        # (實測 33.6s -> 0.2s),幾乎零成本,每次啟動都跑
+        cur.execute("ANALYZE;")

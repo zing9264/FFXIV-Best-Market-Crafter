@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 import time
+from typing import Optional
 
 from config import DISPLAY_WORLD, LOWEST_WORLD
-from db import get_conn, init_db
+from db import get_conn, get_setting, init_db
 
 
-def profit_worlds() -> list[str]:
-    return list(dict.fromkeys([LOWEST_WORLD, DISPLAY_WORLD]))
+def resolve_display_world() -> str:
+    """顯示伺服器:使用者設定優先,未設定回退 config 預設(鳳凰)。"""
+    return get_setting("display_world") or DISPLAY_WORLD
 
 
-def rebuild_profits() -> int:
+def profit_worlds(display_world: Optional[str] = None) -> list[str]:
+    display = display_world or resolve_display_world()
+    return list(dict.fromkeys([LOWEST_WORLD, display]))
+
+
+def rebuild_profits(display_world: Optional[str] = None) -> int:
     init_db()
     now = int(time.time())
-    worlds = profit_worlds()
+    display = display_world or resolve_display_world()
+    worlds = profit_worlds(display)
 
     with get_conn() as conn:
         cur = conn.cursor()
@@ -21,8 +29,15 @@ def rebuild_profits() -> int:
         cur.execute(f"DELETE FROM profits WHERE world IN ({placeholders});", tuple(worlds))
         total_updated = 0
         for material_world in worlds:
+            # ing_counts CTE 取代原本的相關子查詢(HAVING 內每組重查一次
+            # recipe_ingredients),12k 配方省下 12k 次子查詢
             cur.execute(
                 """
+                WITH ing_counts AS (
+                    SELECT output_item_id, COUNT(*) AS n
+                    FROM recipe_ingredients
+                    GROUP BY output_item_id
+                )
                 INSERT OR REPLACE INTO profits(
                     item_id,
                     world,
@@ -70,6 +85,7 @@ def rebuild_profits() -> int:
                     dp.daily_sales,
                     ?
                 FROM recipes r
+                JOIN ing_counts ic ON ic.output_item_id = r.output_item_id
                 JOIN recipe_ingredients ri ON ri.output_item_id = r.output_item_id
                 JOIN prices fp
                   ON fp.item_id = ri.ingredient_item_id
@@ -86,32 +102,30 @@ def rebuild_profits() -> int:
                 GROUP BY
                     r.output_item_id,
                     r.yield,
+                    ic.n,
                     dp.world_name,
                     dp.min_price,
                     dp.sale_price,
                     dp.daily_sales
-                HAVING COUNT(*) = (
-                    SELECT COUNT(*)
-                    FROM recipe_ingredients ri2
-                    WHERE ri2.output_item_id = r.output_item_id
-                );
+                HAVING COUNT(*) = ic.n;
                 """,
                 (
                     material_world,
-                    DISPLAY_WORLD,
+                    display,
                     now,
                     material_world,
-                    DISPLAY_WORLD,
-                    DISPLAY_WORLD,
+                    display,
+                    display,
                 ),
             )
-            total_updated += cur.rowcount if cur.rowcount is not None else 0
+            # CTE + INSERT...SELECT 下 cursor.rowcount 不可靠(回 -1),改用 changes()
+            total_updated += int(cur.execute("SELECT changes();").fetchone()[0])
         return total_updated
 
 
 def main() -> int:
     updated = rebuild_profits()
-    print(f"Updated profits: {updated} rows for display world {DISPLAY_WORLD}")
+    print(f"Updated profits: {updated} rows for display world {resolve_display_world()}")
     return 0
 
 
