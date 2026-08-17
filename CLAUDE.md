@@ -62,3 +62,8 @@ python -m PyInstaller BestMarketCrafter.spec
 - 修改 web_ui.py 路由時注意 templates/index.html 的對應 JS
 - 價格相關邏輯涉及兩個 scope（region / single server），修改時兩邊都要處理
 - DEV_NOTES.md 有完整的架構說明與函式對照表
+
+## Roadmap
+
+- **v1.2(已定案 2026-08-18)**: (1) 托盤常駐時每日自動全量更新(啟動時資料逾一日也補跑),使用者免手動;(2) 顯示伺服器可選(settings 表 + UI 下拉,陸行鳥 DC worlds,取代寫死的鳳凰)。順路可做:rebuild_profits 的相關子查詢優化(目前約 35 秒)
+- **遠期**: Universalis WebSocket 訂閱 + 追加式價格觀測表(歷史走勢圖)—「每日一次」需求下暫不做,等要做走勢功能時一起上
