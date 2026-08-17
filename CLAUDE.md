@@ -43,6 +43,9 @@ python update_profits.py
 
 # 跑測試
 python -m unittest tests.test_web_ui
+
+# 打包 Release(單一 exe,含種子 db 與 data;產出在 dist/)
+python -m PyInstaller BestMarketCrafter.spec
 ```
 
 ## Architecture Notes
