@@ -49,11 +49,10 @@ cd C:\Users\zing9\Downloads\XivExdUnpacker-win-x64
 .\XivExdUnpacker.exe --language tc --sheets Item Recipe RecipeLevelTable --clear
 ```
 
-WSL 端再匯入：
+接著匯入：
 
 ```bash
 cd /mnt/d/FF\ tools/bestmarketcrafter
-source .venv-wsl/bin/activate
 python import_tc_exd.py
 ```
 
@@ -507,7 +506,6 @@ route：
 
 ```bash
 cd /mnt/d/FF\ tools/bestmarketcrafter
-source .venv-wsl/bin/activate
 FF14_APP_HOST=0.0.0.0 python web_ui.py
 ```
 
@@ -515,7 +513,6 @@ FF14_APP_HOST=0.0.0.0 python web_ui.py
 
 ```bash
 cd /mnt/d/FF\ tools/bestmarketcrafter
-source .venv-wsl/bin/activate
 python update_prices.py
 python update_profits.py
 ```
@@ -524,7 +521,6 @@ python update_profits.py
 
 ```bash
 cd /mnt/d/FF\ tools/bestmarketcrafter
-source .venv-wsl/bin/activate
 python import_collectable_rewards.py
 ```
 
@@ -532,7 +528,6 @@ python import_collectable_rewards.py
 
 ```bash
 cd /mnt/d/FF\ tools/bestmarketcrafter
-source .venv-wsl/bin/activate
 python scripts/build_collectable_rewards.py
 ```
 
@@ -540,6 +535,5 @@ python scripts/build_collectable_rewards.py
 
 ```bash
 cd /mnt/d/FF\ tools/bestmarketcrafter
-source .venv-wsl/bin/activate
 python -m unittest tests.test_web_ui
 ```

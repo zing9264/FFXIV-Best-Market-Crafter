@@ -1,3 +1,10 @@
 aiohttp>=3.9.0
 Flask>=3.0.0
 PuLP>=3.0
+
+# release 托盤模式
+pystray>=0.19
+Pillow>=10.0
+
+# 打包(開發機才需要)
+pyinstaller>=6.0

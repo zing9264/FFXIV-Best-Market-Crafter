@@ -30,8 +30,7 @@ data/                  # 收藏品 CSV 資料
 ## Key Commands
 
 ```bash
-# 啟動主程式
-source .venv-wsl/bin/activate
+# 啟動主程式(Windows 原生 Python;首次先 pip install -r requirements.txt)
 python web_ui.py
 
 # 資料匯入

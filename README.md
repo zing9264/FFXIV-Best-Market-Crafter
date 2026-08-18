@@ -1,5 +1,10 @@
 # FFXIV Best Market Crafter
 
+> ### 🎯 只是想用?不用裝任何東西
+> 到 [Releases](https://github.com/zing9264/FFXIV-Best-Market-Crafter/releases) 下載最新 zip,
+> 解壓後雙擊 `BestMarketCrafter.exe` 即可(內含資料庫與打包日價格)。
+> 以下內容全部是**開發者**才需要的。
+
 本專案是本地用的 FF14 製作利潤看板，核心功能是：
 
 - 匯入繁中客戶端 `Item.csv` / `Recipe.csv`
@@ -34,8 +39,8 @@
 在開始前，至少要有：
 
 - Windows 可執行的 `XivExdUnpacker`
-- WSL Ubuntu
-- 專案自己的 Python 虛擬環境 `.venv-wsl`
+- Windows 原生 Python 3.11+(不需要 WSL)
+- 建議建立虛擬環境:`python -m venv .venv` 後 `pip install -r requirements.txt`
 
 ### XivExdUnpacker 安裝方式
 
@@ -98,11 +103,10 @@ cd <專案資料夾>\XivExdUnpacker-win-x64
 .\XivExdUnpacker.exe --language tc --sheets Item Recipe --clear
 ```
 
-再回到 WSL 匯入 SQLite：
+接著匯入 SQLite：
 
 ```bash
 cd <專案資料夾>
-source .venv-wsl/bin/activate
 python import_tc_exd.py
 ```
 
@@ -174,7 +178,6 @@ python update_profits.py
 
 ```bash
 cd <專案資料夾>
-source .venv-wsl/bin/activate
 python web_ui.py
 ```
 
@@ -190,7 +193,6 @@ python web_ui.py
 
 ```bash
 cd <專案資料夾>
-source .venv-wsl/bin/activate
 FF14_APP_HOST=0.0.0.0 FF14_APP_PORT=5000 python web_ui.py
 ```
 
@@ -204,13 +206,11 @@ http://<你的Hamachi IP>:5000
 
 - 這適合小範圍私用，不是正式公開部署
 - 如果連不到，要先檢查 Windows 防火牆是否允許該 port
-- 如果你跑在 WSL 內，還要確認 WSL 對 Hamachi 流量可達
 
 ### 全量更新價格
 
 ```bash
 cd <專案資料夾>
-source .venv-wsl/bin/activate
 python update_prices.py
 python update_profits.py
 ```
@@ -219,7 +219,6 @@ python update_profits.py
 
 ```bash
 cd <專案資料夾>
-source .venv-wsl/bin/activate
 python -m unittest tests.test_web_ui
 ```
 
