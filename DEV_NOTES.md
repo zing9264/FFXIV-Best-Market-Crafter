@@ -45,14 +45,14 @@
 Windows 端先重新解包：
 
 ```powershell
-cd C:\Users\zing9\Downloads\XivExdUnpacker-win-x64
+cd <專案資料夾>\XivExdUnpacker-win-x64
 .\XivExdUnpacker.exe --language tc --sheets Item Recipe RecipeLevelTable --clear
 ```
 
 接著匯入：
 
 ```bash
-cd /mnt/d/FF\ tools/bestmarketcrafter
+cd <專案資料夾>
 python import_tc_exd.py
 ```
 
@@ -505,14 +505,14 @@ route：
 ### 啟動網站
 
 ```bash
-cd /mnt/d/FF\ tools/bestmarketcrafter
+cd <專案資料夾>
 FF14_APP_HOST=0.0.0.0 python web_ui.py
 ```
 
 ### 全量刷新
 
 ```bash
-cd /mnt/d/FF\ tools/bestmarketcrafter
+cd <專案資料夾>
 python update_prices.py
 python update_profits.py
 ```
@@ -520,20 +520,20 @@ python update_profits.py
 ### 匯入收藏品票數表
 
 ```bash
-cd /mnt/d/FF\ tools/bestmarketcrafter
+cd <專案資料夾>
 python import_collectable_rewards.py
 ```
 
 ### 重建收藏品對照 CSV
 
 ```bash
-cd /mnt/d/FF\ tools/bestmarketcrafter
+cd <專案資料夾>
 python scripts/build_collectable_rewards.py
 ```
 
 ### 跑測試
 
 ```bash
-cd /mnt/d/FF\ tools/bestmarketcrafter
+cd <專案資料夾>
 python -m unittest tests.test_web_ui
 ```
