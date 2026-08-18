@@ -50,17 +50,17 @@
 目前這個專案假設你已經把 `XivExdUnpacker` 解壓到 Windows 目錄：
 
 ```text
-C:\Users\zing9\Downloads\XivExdUnpacker-win-x64
+<專案資料夾>\XivExdUnpacker-win-x64
 ```
 
 預設會從這裡找解包後的繁中資料：
 
 ```text
-C:\Users\zing9\Downloads\XivExdUnpacker-win-x64\rawexd\tc\Item.csv
-C:\Users\zing9\Downloads\XivExdUnpacker-win-x64\rawexd\tc\Recipe.csv
+<專案資料夾>\XivExdUnpacker-win-x64\rawexd\tc\Item.csv
+<專案資料夾>\XivExdUnpacker-win-x64\rawexd\tc\Recipe.csv
 ```
 
-如果你放在別的位置，請修改 [`config.py`](/mnt/d/FF%20tools/bestmarketcrafter/config.py)：
+如果你放在別的位置，請修改 [`config.py`](config.py)：
 
 - `UNPACKER_DIR`
 - `RAWEXD_TC_DIR`
@@ -94,14 +94,14 @@ C:\Users\zing9\Downloads\XivExdUnpacker-win-x64\rawexd\tc\Recipe.csv
 先在 Windows 重新解包：
 
 ```powershell
-cd C:\Users\zing9\Downloads\XivExdUnpacker-win-x64
+cd <專案資料夾>\XivExdUnpacker-win-x64
 .\XivExdUnpacker.exe --language tc --sheets Item Recipe --clear
 ```
 
 再回到 WSL 匯入 SQLite：
 
 ```bash
-cd /mnt/d/FF\ tools/bestmarketcrafter
+cd <專案資料夾>
 source .venv-wsl/bin/activate
 python import_tc_exd.py
 ```
@@ -173,12 +173,12 @@ python update_profits.py
 ### 啟動 Web UI
 
 ```bash
-cd /mnt/d/FF\ tools/bestmarketcrafter
+cd <專案資料夾>
 source .venv-wsl/bin/activate
 python web_ui.py
 ```
 
-預設會讀 [`config.py`](/mnt/d/FF%20tools/bestmarketcrafter/config.py) 的：
+預設會讀 [`config.py`](config.py) 的：
 
 - `APP_HOST`
 - `APP_PORT`
@@ -189,7 +189,7 @@ python web_ui.py
 如果只打算給自己和朋友在 Hamachi 內網使用，可以把服務改成對區網開放：
 
 ```bash
-cd /mnt/d/FF\ tools/bestmarketcrafter
+cd <專案資料夾>
 source .venv-wsl/bin/activate
 FF14_APP_HOST=0.0.0.0 FF14_APP_PORT=5000 python web_ui.py
 ```
@@ -209,7 +209,7 @@ http://<你的Hamachi IP>:5000
 ### 全量更新價格
 
 ```bash
-cd /mnt/d/FF\ tools/bestmarketcrafter
+cd <專案資料夾>
 source .venv-wsl/bin/activate
 python update_prices.py
 python update_profits.py
@@ -218,14 +218,14 @@ python update_profits.py
 ### 執行測試
 
 ```bash
-cd /mnt/d/FF\ tools/bestmarketcrafter
+cd <專案資料夾>
 source .venv-wsl/bin/activate
 python -m unittest tests.test_web_ui
 ```
 
 ## 設定集中位置
 
-主要設定都在 [`config.py`](/mnt/d/FF%20tools/bestmarketcrafter/config.py)：
+主要設定都在 [`config.py`](config.py)：
 
 - `DB_PATH`
 - `UNPACKER_DIR`
@@ -240,9 +240,9 @@ python -m unittest tests.test_web_ui
 
 較偏工作記錄與驗證細節的內容在：
 
-- [`DEV_NOTES.md`](/mnt/d/FF%20tools/bestmarketcrafter/DEV_NOTES.md)
+- [`DEV_NOTES.md`](DEV_NOTES.md)
 
-如果要看開發者手冊，請直接看 [`DEV_NOTES.md`](/mnt/d/FF%20tools/bestmarketcrafter/DEV_NOTES.md) 這幾段：
+如果要看開發者手冊，請直接看 [`DEV_NOTES.md`](DEV_NOTES.md) 這幾段：
 
 - `3. 核心資料表`
 - `4. 價格口徑規則`

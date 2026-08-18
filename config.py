@@ -20,7 +20,9 @@ XIVAPI_BASE_URL = os.environ.get("XIVAPI_BASE_URL", "https://xivapi.com")
 XIVAPI_KEY = os.environ.get("XIVAPI_KEY")  # optional
 
 # Local EXD import sources
-UNPACKER_DIR = os.environ.get("FF14_UNPACKER_DIR", r"C:\Users\zing9\Downloads\XivExdUnpacker-win-x64")
+# 進階功能(遊戲改版後重新匯入食譜)才會用到;一般使用不需要。
+# 預設找專案旁的 XivExdUnpacker-win-x64,或用 FF14_UNPACKER_DIR 指定。
+UNPACKER_DIR = os.environ.get("FF14_UNPACKER_DIR", str(Path(__file__).parent / "XivExdUnpacker-win-x64"))
 RAWEXD_TC_DIR = os.environ.get("FF14_RAWEXD_TC_DIR", str(Path(UNPACKER_DIR) / "rawexd" / "tc"))
 ITEM_CSV_PATH = os.environ.get("FF14_ITEM_CSV_PATH", str(Path(RAWEXD_TC_DIR) / "Item.csv"))
 RECIPE_CSV_PATH = os.environ.get("FF14_RECIPE_CSV_PATH", str(Path(RAWEXD_TC_DIR) / "Recipe.csv"))
